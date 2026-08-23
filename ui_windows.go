@@ -86,7 +86,7 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 
 	if err := (dcl.MainWindow{
 		AssignTo: &ui.window,
-		Title:    "zenfreegate",
+		Title:    "opencode-free-autogate",
 		Icon:     appIcon,
 		Font:     uiFont,
 		MinSize:  dcl.Size{Width: 760, Height: 460},
@@ -347,7 +347,7 @@ func (ui *gatewayUI) refreshHeadline() {
 		ui.headline.SetText(text)
 		ui.headline.SetTextColor(color)
 	}
-	if title := "zenfreegate ● 运行中"; title != ui.titleText {
+	if title := "opencode-free-autogate ● 运行中"; title != ui.titleText {
 		ui.titleText = title
 		_ = ui.window.SetTitle(title)
 	}

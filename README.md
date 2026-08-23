@@ -1,11 +1,11 @@
-# zenfreegate
+# opencode-free-autogate
 
 Go 实现的 **OpenCode 免费模型本地网关**：把 opencode.ai 免费模型包装成 OpenAI / Anthropic / Codex 兼容接口，Windows 单文件运行。
 
 ```
 opencode 客户端
     ↓  http://localhost:13339/openai/v1
-zenfreegate.exe
+opencode-free-autogate.exe
     ↓  两轮健康检测 ＋ 对冲竞速 ＋ 会话粘性 ＋ 多镜像轮转
 opencode.ai/zen ＋ 3 个公共 CDN 镜像
 ```
@@ -68,7 +68,7 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 
 ## 快速开始
 
-1. 从 [Releases](https://github.com/krisxu23/zenfreegate/releases/tag/exe-latest) 下载 `zenfreegate-gui.exe`，任意目录双击运行。
+1. 从 [Releases](https://github.com/krisxu23/opencode-free-autogate/releases/tag/exe-latest) 下载 `opencode-free-autogate-gui.exe`，任意目录双击运行。
 2. 编辑 opencode 配置文件（`~/.config/opencode/opencode.jsonc`），添加 provider：
 
 ```jsonc
@@ -155,7 +155,7 @@ https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt
   interval: 600
 
 # rules 顶部追加
-- PROCESS-NAME,zenfreegate.exe,OpenCode网关
+- PROCESS-NAME,opencode-free-autogate.exe,OpenCode网关
 ```
 
 网关里填 `socks5://127.0.0.1:7890`，切到「走代理」保存重启。
@@ -191,12 +191,12 @@ https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt
 
 ## 构建
 
-推送后 GitHub Actions 自动构建并发布到 [exe-latest](https://github.com/krisxu23/zenfreegate/releases/tag/exe-latest)：`-gui.exe`（图形版）/ `-console.exe`（排障版）。本地构建需 Go 1.24+：
+推送后 GitHub Actions 自动构建并发布到 [exe-latest](https://github.com/krisxu23/opencode-free-autogate/releases/tag/exe-latest)：`-gui.exe`（图形版）/ `-console.exe`（排障版）。本地构建需 Go 1.24+：
 
 ```bash
 go test ./...
-go build -trimpath -ldflags "-s -w -H windowsgui" -o zenfreegate-gui.exe .   # GUI 版先用 go-winres 嵌图标
-go build -trimpath -ldflags "-s -w" -o zenfreegate-console.exe .
+go build -trimpath -ldflags "-s -w -H windowsgui" -o opencode-free-autogate-gui.exe .   # GUI 版先用 go-winres 嵌图标
+go build -trimpath -ldflags "-s -w" -o opencode-free-autogate-console.exe .
 ```
 
 ## 免责声明

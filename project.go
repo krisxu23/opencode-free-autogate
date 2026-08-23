@@ -32,7 +32,7 @@ type projectSpec struct {
 
 func currentProject() projectSpec {
 	return projectSpec{
-		name:        "zenfreegate",
+		name:        "opencode-free-autogate",
 		displayName: "OpenCode",
 		upstream:    "https://opencode.ai/zen",
 		probePath:   "/v1/models",

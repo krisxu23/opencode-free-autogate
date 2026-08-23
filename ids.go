@@ -43,7 +43,7 @@ func deriveRequestIDs(headers http.Header, body map[string]any) requestIDs {
 	}
 	projectSignal := firstString(headers.Get("x-opencode-project"), stringAt(body, "metadata", "project_id"))
 	if projectSignal == "" {
-		projectSignal = "zenfreegate:default-project"
+		projectSignal = "opencode-free-autogate:default-project"
 	}
 	return requestIDs{
 		Session: stableID("ses", signal),

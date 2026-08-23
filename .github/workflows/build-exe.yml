@@ -44,7 +44,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           go run github.com/tc-hib/go-winres@v0.3.3 simply --icon app.ico --manifest gui --arch amd64
           if (-not (Test-Path "*.syso")) { throw "go-winres 未生成 .syso 资源文件" }
-          go build -trimpath -tags "with_quic,with_utls,with_gvisor" -ldflags "-s -w -H windowsgui -X main.uiMode=gui" -o zenfreegate-gui.exe .
+          go build -trimpath -tags "with_quic,with_utls,with_gvisor" -ldflags "-s -w -H windowsgui -X main.uiMode=gui" -o opencode-free-autogate-gui.exe .
           Remove-Item -Path *.syso -Force
 
       # 控制台版：无图标无清单
@@ -53,7 +53,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          go build -trimpath -tags "with_quic,with_utls,with_gvisor" -ldflags "-s -w -X main.uiMode=console" -o zenfreegate-console.exe .
+          go build -trimpath -tags "with_quic,with_utls,with_gvisor" -ldflags "-s -w -X main.uiMode=console" -o opencode-free-autogate-console.exe .
 
       # 冒烟测试：GUI exe 必须带图标和 Common-Controls 清单（walk 窗口的硬依赖），
       # 且启动后 5 秒内不得退出。曾经因清单缺失产出"打不开"的残缺 exe，这里拦住这类回归。
@@ -62,7 +62,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Add-Type -AssemblyName System.Drawing
-          $exe = "zenfreegate-gui.exe"
+          $exe = "opencode-free-autogate-gui.exe"
           $icon = [System.Drawing.Icon]::ExtractAssociatedIcon("$PWD\$exe")
           if ($null -eq $icon) { throw "GUI exe 缺少图标资源" }
           $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes("$PWD\$exe"))
@@ -76,10 +76,10 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: zenfreegate-windows-x64
+          name: opencode-free-autogate-windows-x64
           path: |
-            zenfreegate-gui.exe
-            zenfreegate-console.exe
+            opencode-free-autogate-gui.exe
+            opencode-free-autogate-console.exe
 
       - name: Publish to Release
         env:
@@ -91,7 +91,7 @@ jobs:
             --title "Windows EXE (latest)" \
             --notes "自动构建于 $(date -u '+%Y-%m-%d %H:%M UTC')，源码 commit ${GITHUB_SHA::7}
 
-          - zenfreegate-gui.exe：图形界面版（推荐，双击即用）
-          - zenfreegate-console.exe：控制台版（排障用，输出纯日志）" \
-            zenfreegate-gui.exe \
-            zenfreegate-console.exe
+          - opencode-free-autogate-gui.exe：图形界面版（推荐，双击即用）
+          - opencode-free-autogate-console.exe：控制台版（排障用，输出纯日志）" \
+            opencode-free-autogate-gui.exe \
+            opencode-free-autogate-console.exe

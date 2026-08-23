@@ -1,4 +1,4 @@
-module github.com/krisxu23/zenfreegate
+module github.com/krisxu23/opencode-free-autogate
 
 go 1.24
 
