@@ -637,23 +637,10 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 			observe(!terminalSeen)
 		}
 	}
-	// injectStreamError 在流未能正常收尾时补发一个格式合法的 SSE 错误事件。
-	// 没有它，出口代理中途暴毙表现为 TCP 半途重置，客户端判定传输层崩溃
-	// （network_error）直接放弃任务、不走重试；补上可解析的错误事件后，
-	// 同样的中断会被当作生成错误进入客户端的自动重试。同时覆盖两种路由
-	// 的解析习惯：OpenAI 兼容读 data.error，Anthropic 读 event: error，
-	// 各自忽略不认识的那段。
-	injectStreamError := func() {
-		if flusher == nil {
-			return
-		}
-		var buf bytes.Buffer
-		buf.WriteString("data: {\"error\":{\"message\":\"upstream stream truncated mid-generation\",\"type\":\"upstream_error\",\"code\":\"stream_truncated\"}}\n\n")
-		buf.WriteString("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"upstream stream truncated\"}}\n\n")
-		if _, err := w.Write(buf.Bytes()); err == nil && flusher != nil {
-			flusher.Flush()
-		}
-	}
+	// 实测结论：流中断时补发显式 SSE 错误事件会让 agent 工具把它当作
+	// 致命 API 错误直接放弃任务（PI_AI_ERROR）；而干净的流结束（无
+	// finish_reason）反而触发它的自动重试。所以这里保持静默干净关闭，
+	// 不注入任何错误载荷。
 	// 复用单个计时器实现空闲超时：到点取消上游请求，阻塞中的 Read 随之返回。
 	timer := time.AfterFunc(idle, live.cancel)
 	defer timer.Stop()
@@ -672,16 +659,12 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 		}
 		if !stopped {
 			log.Printf("[流] %s 内无数据，已关闭连接", idle)
-			injectStreamError()
 			report()
 			return
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) && ctx.Err() == nil {
 				log.Printf("[流] upstream stream ended: %v", err)
-				// 上游异常断开（节点暴毙/连接重置）：补发错误事件，让客户端
-				// 把这次中断当作可重试的生成错误而不是传输崩溃。
-				injectStreamError()
 			}
 			if ctx.Err() == nil {
 				report()
