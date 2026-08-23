@@ -26,6 +26,7 @@ type uiSettings struct {
 	MirrorInput      string   `json:"mirror_input"`       // 用户原始输入，回填输入框
 	FirstByteSeconds int      `json:"first_byte_seconds"` // 流式首字节超时，秒
 	BudgetSeconds    int      `json:"budget_seconds"`     // 流式总预算，秒
+	DeepProbeMinutes int      `json:"deep_probe_minutes"` // chat 深检间隔，分钟
 	GatewayKey       string   `json:"gateway_key"`        // 展示用的默认 Key
 	PoolEnabled      bool     `json:"pool_enabled"`       // 在线节点池开关
 	PoolInput        string   `json:"pool_input"`         // 节点源链接，回填输入框
@@ -44,6 +45,7 @@ func defaultSettings() uiSettings {
 		MirrorInput:      strings.Join(defaultMirrorURLs, "\r\n"),
 		FirstByteSeconds: 30,
 		BudgetSeconds:    180,
+		DeepProbeMinutes: 60,
 		GatewayKey:       defaultGatewayKey,
 		PoolEnabled:      false,
 		PoolInput:        "",
@@ -89,6 +91,16 @@ func (s uiSettings) normalized() uiSettings {
 	}
 	if s.BudgetSeconds < s.FirstByteSeconds {
 		s.BudgetSeconds = s.FirstByteSeconds
+	}
+	// 深检间隔下限与 deepprobe 内部护栏一致（10 分钟），上限一天。
+	if s.DeepProbeMinutes <= 0 {
+		s.DeepProbeMinutes = 60
+	}
+	if s.DeepProbeMinutes < 10 {
+		s.DeepProbeMinutes = 10
+	}
+	if s.DeepProbeMinutes > 1440 {
+		s.DeepProbeMinutes = 1440
 	}
 	if strings.TrimSpace(s.GatewayKey) == "" {
 		s.GatewayKey = defaultGatewayKey
@@ -140,6 +152,7 @@ func (s uiSettings) applyEnv() {
 	}
 	setIfEmpty("PROXY_FIRST_BYTE_TIMEOUT", fmt.Sprintf("%d", s.FirstByteSeconds*1000))
 	setIfEmpty("HARD_TIMEOUT", fmt.Sprintf("%d", s.BudgetSeconds*1000))
+	setIfEmpty("PROXY_DEEP_PROBE_INTERVAL", fmt.Sprintf("%d", s.DeepProbeMinutes*60000))
 	if s.PoolEnabled {
 		if urls := parsePoolSources(s.PoolInput); len(urls) > 0 {
 			setIfEmpty("PROXY_LIST_URLS", strings.Join(urls, ","))

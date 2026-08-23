@@ -57,6 +57,7 @@ type gatewayUI struct {
 	keyEdit       *walk.LineEdit
 	firstByte     *walk.NumberEdit
 	budget        *walk.NumberEdit
+	deepProbe     *walk.NumberEdit
 	outboundBox   *walk.ComboBox
 	logCursor     int
 	modelsSeen    string
@@ -195,7 +196,9 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 											dcl.NumberEdit{AssignTo: &ui.firstByte, Value: float64(settings.FirstByteSeconds), MinValue: 3, MaxValue: 600, Decimals: 0, MaxSize: dcl.Size{Width: 70}},
 											dcl.Label{Text: "秒     总预算"},
 											dcl.NumberEdit{AssignTo: &ui.budget, Value: float64(settings.BudgetSeconds), MinValue: 5, MaxValue: 1800, Decimals: 0, MaxSize: dcl.Size{Width: 80}},
-											dcl.Label{Text: "秒"},
+											dcl.Label{Text: "秒     深检间隔"},
+											dcl.NumberEdit{AssignTo: &ui.deepProbe, Value: float64(settings.DeepProbeMinutes), MinValue: 10, MaxValue: 1440, Decimals: 0, MaxSize: dcl.Size{Width: 70}},
+											dcl.Label{Text: "分"},
 										},
 									},
 									dcl.Label{Text: "代理节点（一行一个；支持 socks5/http、vless://、vmess://、trojan://、ss://、hysteria2://(hy2)、tuic:// 分享链接；手动节点不会被自动删除）:"},
@@ -462,6 +465,7 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 	}
 	next.FirstByteSeconds = int(ui.firstByte.Value())
 	next.BudgetSeconds = int(ui.budget.Value())
+	next.DeepProbeMinutes = int(ui.deepProbe.Value())
 	next.ProxyInput = ui.proxyEdit.Text()
 	next.MirrorInput = ui.mirrorEdit.Text()
 	next.PoolEnabled = ui.poolCheck.Checked()
@@ -554,15 +558,16 @@ func restartSelf() error {
 // restartEnv 剔除由 config.json 派生的环境变量，避免旧值覆盖新配置。
 func restartEnv() []string {
 	managed := map[string]struct{}{
-		"PORT":                     {},
-		"PROXY_ORDER":              {},
-		"CUSTOM_PROXIES":           {},
-		"MIRROR_URLS":              {},
-		"PROXY_FIRST_BYTE_TIMEOUT": {},
-		"HARD_TIMEOUT":             {},
-		"PROXY_LIST_URLS":          {}, // 节点池源链接
-		"PROXY_RACE":               {}, // 并行竞速开关
-		"PROXY_RACE_WIDTH":         {}, // 竞速并发宽度
+		"PORT":                      {}, // 网关端口
+		"PROXY_ORDER":               {}, // 出站模式
+		"CUSTOM_PROXIES":            {}, // 自定义代理
+		"MIRROR_URLS":               {}, // 上游镜像
+		"PROXY_FIRST_BYTE_TIMEOUT":  {}, // 流式首字节超时
+		"HARD_TIMEOUT":              {}, // 流式总预算
+		"PROXY_DEEP_PROBE_INTERVAL": {}, // chat 深检间隔
+		"PROXY_LIST_URLS":           {}, // 节点池源链接
+		"PROXY_RACE":                {}, // 并行竞速开关
+		"PROXY_RACE_WIDTH":          {}, // 竞速并发宽度
 	}
 	env := os.Environ()
 	kept := make([]string, 0, len(env))

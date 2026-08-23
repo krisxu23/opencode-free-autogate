@@ -59,6 +59,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 	settings.Proxies, _ = ParseProxyInput(settings.ProxyInput)
 	settings.FirstByteSeconds = 45
 	settings.BudgetSeconds = 200
+	settings.DeepProbeMinutes = 30
 
 	if err := settings.save(path); err != nil {
 		t.Fatalf("save failed: %v", err)
@@ -72,6 +73,9 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 	if loaded.FirstByteSeconds != 45 || loaded.BudgetSeconds != 200 {
 		t.Fatalf("timeouts = %d/%d", loaded.FirstByteSeconds, loaded.BudgetSeconds)
+	}
+	if loaded.DeepProbeMinutes != 30 {
+		t.Fatalf("deep probe minutes = %d", loaded.DeepProbeMinutes)
 	}
 	if len(loaded.Mirrors) != len(defaultMirrorURLs) {
 		t.Fatalf("mirrors = %v", loaded.Mirrors)
@@ -112,6 +116,18 @@ func TestSettingsNormalizedClampsInvalidValues(t *testing.T) {
 	}
 	if normalized.GatewayKey != defaultGatewayKey {
 		t.Fatalf("key = %q", normalized.GatewayKey)
+	}
+	if normalized.DeepProbeMinutes != 60 {
+		t.Fatalf("missing deep probe must default to 60, got %d", normalized.DeepProbeMinutes)
+	}
+
+	extremes := uiSettings{DeepProbeMinutes: 3}.normalized()
+	if extremes.DeepProbeMinutes != 10 {
+		t.Fatalf("deep probe floor = %d", extremes.DeepProbeMinutes)
+	}
+	extremes = uiSettings{DeepProbeMinutes: 5000}.normalized()
+	if extremes.DeepProbeMinutes != 1440 {
+		t.Fatalf("deep probe ceiling = %d", extremes.DeepProbeMinutes)
 	}
 }
 
@@ -209,6 +225,9 @@ func TestApplyEnvRespectsExistingEnvironment(t *testing.T) {
 	}
 	if got := envInt("HARD_TIMEOUT", 0); got != 150000 {
 		t.Fatalf("budget ms = %d", got)
+	}
+	if got := envInt("PROXY_DEEP_PROBE_INTERVAL", 0); got != 60*60000 {
+		t.Fatalf("deep probe ms = %d", got)
 	}
 	if got := envString("MIRROR_URLS", ""); !strings.Contains(got, "cmliussss.net") {
 		t.Fatalf("mirrors = %q", got)

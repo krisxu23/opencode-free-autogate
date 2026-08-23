@@ -14,6 +14,7 @@ func TestRestartEnvStripsAllManagedVars(t *testing.T) {
 	t.Setenv("MIRROR_URLS", "https://a.example/zen")
 	t.Setenv("PROXY_FIRST_BYTE_TIMEOUT", "30000")
 	t.Setenv("HARD_TIMEOUT", "180000")
+	t.Setenv("PROXY_DEEP_PROBE_INTERVAL", "3600000")
 	t.Setenv("PROXY_LIST_URLS", "https://old.example/sub")
 	t.Setenv("PROXY_RACE", "1")
 	t.Setenv("PROXY_RACE_WIDTH", "8")
@@ -23,6 +24,7 @@ func TestRestartEnvStripsAllManagedVars(t *testing.T) {
 	for _, key := range []string{
 		"PORT=", "PROXY_ORDER=", "CUSTOM_PROXIES=", "MIRROR_URLS=",
 		"PROXY_FIRST_BYTE_TIMEOUT=", "HARD_TIMEOUT=",
+		"PROXY_DEEP_PROBE_INTERVAL=",
 		"PROXY_LIST_URLS=", "PROXY_RACE=", "PROXY_RACE_WIDTH=",
 	} {
 		if strings.Contains(joined, key) {
