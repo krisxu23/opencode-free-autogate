@@ -1,0 +1,97 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Resolve dependencies
+        run: |
+          go mod tidy
+          go mod download
+
+      # 仅提示不阻断：发现未格式化文件时打印清单
+      - name: Check formatting
+        run: |
+          $files = gofmt -l .
+          if ($files) { Write-Host "::warning::以下文件未通过 gofmt:"; $files } else { Write-Host "gofmt 检查通过" }
+
+      - name: Run tests
+        run: go test -tags "with_quic,with_utls,with_gvisor" ./...
+
+      # 界面版：用 go-winres simply 一次性嵌入图标 + GUI清单
+      # with_quic 启用 hysteria2/tuic，with_utls 启用 reality/uTLS 指纹
+      # 注意：simply 的 --manifest 只接受 cli/gui/none 三个关键字，不接受文件路径；
+      # 且 PowerShell 默认不因外部命令失败而中止步骤，必须显式开启失败即停，
+      # 否则 go-winres 报错会被静默吞掉，产出没有图标和清单的残缺 exe。
+      - name: Build GUI exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          go run github.com/tc-hib/go-winres@v0.3.3 simply --icon app.ico --manifest gui --arch amd64
+          if (-not (Test-Path "*.syso")) { throw "go-winres 未生成 .syso 资源文件" }
+          go build -trimpath -tags "with_quic,with_utls,with_gvisor" -ldflags "-s -w -H windowsgui -X main.uiMode=gui" -o zenfreegate-gui.exe .
+          Remove-Item -Path *.syso -Force
+
+      # 控制台版：无图标无清单
+      - name: Build console exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          go build -trimpath -tags "with_quic,with_utls,with_gvisor" -ldflags "-s -w -X main.uiMode=console" -o zenfreegate-console.exe .
+
+      # 冒烟测试：GUI exe 必须带图标和 Common-Controls 清单（walk 窗口的硬依赖），
+      # 且启动后 5 秒内不得退出。曾经因清单缺失产出"打不开"的残缺 exe，这里拦住这类回归。
+      - name: Smoke test GUI exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Drawing
+          $exe = "zenfreegate-gui.exe"
+          $icon = [System.Drawing.Icon]::ExtractAssociatedIcon("$PWD\$exe")
+          if ($null -eq $icon) { throw "GUI exe 缺少图标资源" }
+          $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes("$PWD\$exe"))
+          if (-not $text.Contains("Microsoft.Windows.Common-Controls")) { throw "GUI exe 缺少 Common-Controls 清单（walk 窗口将无法创建）" }
+          $proc = Start-Process -FilePath "$PWD\$exe" -PassThru -WorkingDirectory $PWD
+          Start-Sleep -Seconds 5
+          if ($proc.HasExited) { throw "GUI exe 启动后立即退出，退出码 $($proc.ExitCode)" }
+          Stop-Process -Id $proc.Id -Force
+          Write-Host "冒烟测试通过：图标/清单齐全，进程稳定运行"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: zenfreegate-windows-x64
+          path: |
+            zenfreegate-gui.exe
+            zenfreegate-console.exe
+
+      - name: Publish to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release delete exe-latest --yes --cleanup-tag || true
+          gh release create exe-latest \
+            --title "Windows EXE (latest)" \
+            --notes "自动构建于 $(date -u '+%Y-%m-%d %H:%M UTC')，源码 commit ${GITHUB_SHA::7}
+
+          - zenfreegate-gui.exe：图形界面版（推荐，双击即用）
+          - zenfreegate-console.exe：控制台版（排障用，输出纯日志）" \
+            zenfreegate-gui.exe \
+            zenfreegate-console.exe
