@@ -202,3 +202,17 @@ go build -trimpath -ldflags "-s -w" -o opencode-free-autogate-console.exe .
 ## 免责声明
 
 本项目仅为个人学习研究用途的本地网络工具，不提供任何节点资源；使用公共免费代理产生的风险（稳定性、隐私、第三方节点可信度）自行评估。请遵守 opencode.ai 服务条款与当地法律法规。
+
+## 致谢
+
+本项目的诞生与演进直接受益于以下开源项目，一并致谢：
+
+| 项目 | 贡献 |
+|---|---|
+| [GuJi08233/opencode-free-gate](https://github.com/GuJi08233/opencode-free-gate) | 本项目的直接前身——opencode 客户端指纹模拟、会话-代理亲和性与整体骨架源自这里（仓库血脉更早上溯至 pandas886 的初始化提交） |
+| [tashfeenahmed/freellmapi](https://github.com/tashfeenahmed/freellmapi) | 健康检查的节奏纪律（抖动间隔、乱序采样、最小间距防风控）参考其设计 |
+| [opencode2api 系列](https://github.com/search?q=opencode2api&type=repositories) | 在同一上游生产环境验证了 `prompt_cache_retention` 等缓存字段与粘性会话的真实收益 |
+| [SagerNet/sing-box](https://github.com/SagerNet/sing-box) | 内嵌核心：vless / vmess / trojan / ss / hysteria2 / tuic 分享链接解析与本地多协议出口全部由它驱动 |
+| [lxn/walk](https://github.com/lxn/walk) | Windows 原生图形界面库 |
+| [tc-hib/go-winres](https://github.com/tc-hib/go-winres) | 构建期为 exe 嵌入图标与应用清单 |
+| [models.dev](https://models.dev) | 免费模型目录数据源（深检模型下线预警哨兵） |
