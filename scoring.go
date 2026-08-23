@@ -24,6 +24,7 @@ type exitStat struct {
 	softUntil   time.Time     // 板凳到期后的观察窗：期间同出口仅允许一路在途
 	inFlight    int           // 在途租约数（对冲并发下防同一出口被集体压爆）
 	truncations int           // 累计空流/中途断流次数
+	truncAt     time.Time     // 最近一次流截断时刻：粘性短期回避该出口
 }
 
 // benchSource 标记板凳的依据来源，决定能否被探活提前释放：
@@ -109,13 +110,25 @@ func (t *exitTracker) observeFail(addr string) {
 }
 
 // observeTruncation 记一次空流/中途断流：截断是最差信号，计入截断计数
-// 并按失败连击处理。
+// 并按失败连击处理，同时记录时刻供粘性短期回避。
 func (t *exitTracker) observeTruncation(addr string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	s := t.statLocked(addr)
 	s.truncations++
+	s.truncAt = time.Now()
 	t.failLocked(s)
+}
+
+// recentlyTruncated 报告出口是否在 window 内发生过流截断。截断说明上游
+// 可能在掐这条链路：粘性绝不该把客户端的自动重试再钉回同一条刚断过的
+// 链路（生产日志实测同一出口连坑两次），竞速排序也会因 truncations
+// 计数自然后沉。
+func (t *exitTracker) recentlyTruncated(addr string, window time.Duration) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := t.stats[addr]
+	return s != nil && !s.truncAt.IsZero() && time.Since(s.truncAt) < window
 }
 
 func (t *exitTracker) failLocked(s *exitStat) {

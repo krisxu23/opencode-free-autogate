@@ -1396,6 +1396,11 @@ const (
 	hedgeBatch     = 3 // 每一加发批次的出口数
 )
 
+// stickyTruncSkip 出口发生流截断后，粘性暂时不再钉它的时长。客户端收到
+// "Stream ended without finish_reason" 会自动重试；若粘性仍钉回刚被上游
+// 掐断的同一条链路，重试大概率二次截断（生产日志实测连坑两次）。
+const stickyTruncSkip = 5 * time.Minute
+
 // dispatchRace 对冲竞速：出口按近期表现排序后分批出发——首批数量少，
 // hedgeDelay 内无人交付首个真实数据块就加发下一批，首个数据块即赢家
 // （perform 的验证门已保证赢家交过首数据块）。赢家出现后立即取消在途
@@ -1533,7 +1538,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 	// 失败则照常按对冲阶梯升级，不影响可用性。
 	firstWave := hedgeFirstWave
 	if g.cfg.stickyEnabled {
-		if addr, ok := g.stickyLookup(request.session); ok {
+		if addr, ok := g.stickyLookup(request.session); ok && !g.exits.recentlyTruncated(addr, stickyTruncSkip) {
 			for i := range exits {
 				if exits[i].addr == addr {
 					pinned := exits[i]
