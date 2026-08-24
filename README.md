@@ -15,13 +15,14 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 **启动后约 60 秒完成两轮体检，之后你只跟验证过的节点说话：**
 
 ```
-拉取节点池（订阅/源链接，99 个）
-  ↓ 第一轮：GET 探活（零配额）——全部节点测真实上游连通性＋延迟     → 幸存 32 个
-  ↓ 第二轮：chat 深检（每 IP 一个 max_tokens=1 迷你对话）           → 验证 28 个真健康
-  ↓ 按"真实对话级延迟"排序，随时待命；4 个额度枯竭的假健康坐板凳
+拉取节点池（订阅源 + 裸代理源，如 GitHub IPOcate 免费列表）
+  ↓ 源拉取：直连失败时自动经现有健康出口兜底重试（源获取与上游请求同一哲学）
+  ↓ 第一轮：GET 探活（零配额）——全部节点测真实上游连通性＋延迟     → 幸存
+  ↓ 第二轮：chat 深检（每 IP 一个 max_tokens=1 迷你对话）           → 验证真健康
+  ↓ 按"真实对话级延迟"排序，随时待命；额度枯竭的假健康坐板凳
 ```
 
-- 第一轮证明"网络通"，第二轮穿透上游额度门证明"配额没死"——只过第一轮的是假健康。两轮数量都随池子规模动态决定，不设固定上限。
+- 第一轮证明"网络通"，第二轮穿透上游额度门证明"配额没死"——只过第一轮的是假健康。两轮数量都随池子规模动态决定，不设固定上限。**所有节点类型**（socks5/vless/vmess/ss/trojan/hysteria2）统一走两轮检测，标准一致。
 - **对话时**：同会话优先复用上次胜出的出口（粘性，吃上游提示缓存）；首发未决则按延迟排序对冲竞速——多路同时出发，最快吐数据的赢，输家立即取消且不记惩罚；全军覆没落直连兜底。
 - **限流记账分级**：上游亲口给的恢复时间（Retry-After / 响应体）＝权威板凳，到点才回归；自己推断的（如 FreeUsageLimitError 默认 2 小时）允许每小时深检提前推翻。计费类错误（402）直接坐 24 小时。
 - **板凳到期不踩踏**：刚恢复的出口进入 60 秒观察窗，期间只放一路在途，防止对冲并发把刚回血的额度瞬间压爆。
@@ -52,6 +53,7 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 |---|---|
 | **协议兼容** | OpenAI / Anthropic / Codex 三种路由，客户端零改造接入 |
 | **请求体卫生** | 自动剔除缺失 function.name 的工具条目、tools 超 128 截断、剥离 client_metadata——畸形请求体不再烧掉出口尝试 |
+| **思考模型兼容** | deepseek/kimi/minimax 系模型多轮对话自动补 `reasoning_content` 占位符，防止 OpenAI 格式客户端缺字段导致上游 400 |
 | **管家流量拦截** | 客户端的配额探测类请求（极保守匹配＋日志可见）本地直接应答，不消耗上游额度 |
 | **UA 版本同步** | 每天从 npm 拉官方 CLI 最新版本号，固定版本号不会日久成为识别特征 |
 
@@ -60,7 +62,7 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 | 功能 | 说明 |
 |---|---|
 | **高级节点** | 内嵌 sing-box v1.13：`vless` `vmess` `trojan` `ss` `hysteria2(hy2)` `tuic` 分享链接直接粘贴，自动转为内部 SOCKS5 参与探活和竞速 |
-| **在线节点池** | 定时拉取源链接 → 真实探活 → 健康入池 / 失效自删；支持文本列表、JSON、base64 订阅 |
+| **在线节点池** | 定时拉取源链接 → 真实探活 → 健康入池 / 失效自删；**源直连失败时自动经健康出口兜底重试**；支持文本列表、JSON、base64 订阅、裸 socks5/ip:port 列表 |
 | **手动节点保护** | 手动填写的节点无条件保留、永不自动移除（坐板凳≠删除） |
 | **模型清单** | 启动拉取免费模型长期使用；短名自动重定向 `-free`；models.dev 每日校准仅作下线预警，不影响深检模型选择 |
 
@@ -111,6 +113,8 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 | `[粘性] ses_xxx 钉住 …` | 该会话后续请求优先走同一出口 |
 | `[竞速] 胜出: … 已发 N 路（含直连）` | 本笔请求的交付出口与并发路数 |
 | `[限流] … 暂停 …（上游声明/推断）` | 额度受限板凳；括号内为依据等级 |
+| `[池] 经出口 xxx 拉取成功` | 节点源直连失败后经出口兜底重试成功 |
+| `[池] 拉取失败 … / 出口兜底也失败` | 源直连失败，正在/已用出口兜底重试 |
 | `[校准]` | models.dev 下线预警（借道出口拉取） |
 | `[管家]` | 本地拦截了客户端的配额探测请求 |
 | `[唤醒]` | 检测到系统休眠恢复并已自愈 |
@@ -122,20 +126,21 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 |---|---|
 | 手动节点 | 设置 → 代理节点框粘贴，一行一个；支持 socks5/http URL 与各协议分享链接 |
 | 订阅 / 节点源 | 打开「在线节点池」开关并填源链接；支持 base64 订阅、socks5 文本列表、amux JSON、明文分享链接 |
+| 裸代理源 | GitHub iplocate 免费 socks5 列表等直填 `ip:port` 文本；直连不通时网关自动走出口兜底 |
 | mihomo 本地 | 填 `socks5://127.0.0.1:7890` 即可复用本机 Clash 的全部节点 |
 
 <details>
 <summary>推荐的公共免费代理源（可选，可用率低，仅作备胎）</summary>
 
 ```
-https://proxy.amux.ai/api/proxies
-https://raw.githubusercontent.com/watchttvv/free-proxy-list/refs/heads/main/proxy.txt
-https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt
+https://github.cmliussss.net/https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt
+https://gh-proxy.com/https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt
+https://ghfast.top/https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt
 https://bestcf.pages.dev/s5gy/all.txt
-https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt
-https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5.txt
-https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt
+https://proxy.amux.ai/api/proxies
 ```
+
+> 镜像地址（gh-proxy.com / ghfast.top / gh.llkk.cc 等）随时段波动，多贴几个做对冲。死掉的源只是日志一条 `拉取失败`，零成本；不同镜像拉到相同 ip:port 自动去重。
 </details>
 
 <details>
@@ -176,7 +181,7 @@ https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt
 | `PROXY_HEDGE_DELAY` | `1500` | 对冲竞速：首批无首字节后加发下一批的延迟（毫秒） |
 | `PROXY_STICKY` | `1` | 会话粘性开关 |
 | `PROXY_DEEP_PROBE_INTERVAL` | `3600000` | chat 深检间隔（毫秒） |
-| `PROXY_PROBE_MODEL` | `big-pickle` | 深检固定模型：长期在售型号，其他名字随时下线不参与选择 |
+| `PROXY_PROBE_MODEL` | `big-pickle` | 深检模型：GUI 下拉可选（实时上游模型列表），环境变量优先；长期在售型号最稳 |
 | `PROXY_CACHE_FIELDS` | `1` | prompt 缓存字段注入开关 |
 | `PROXY_LOCAL_MOCKS` | `1` | 管家流量本地应答开关 |
 | `PROXY_FIRST_BYTE_TIMEOUT` | `30000` | 流式首字节超时（毫秒） |
@@ -210,6 +215,9 @@ go build -trimpath -ldflags "-s -w" -o opencode-free-autogate-console.exe .
 | 项目 | 贡献 |
 |---|---|
 | [GuJi08233/opencode-free-gate](https://github.com/GuJi08233/opencode-free-gate) | 本项目的直接前身——opencode 客户端指纹模拟、会话-代理亲和性与整体骨架源自这里（仓库血脉更早上溯至 pandas886 的初始化提交） |
+| [kirafishy/OCFreeRelay](https://github.com/kirafishy/OCFreeRelay) | 429 分级封禁设计（FreeUsageLimitError 长停 / Retry-After 权威板凳 / 普通限流不坐板凳）与 reasoning_content 注入策略的原始设计 |
+| [decolua/9router](https://github.com/decolua/9router) | opencode 指纹头规范（X-Opencode-Session/Request/Project）与 deepseek/kimi 系 reasoning_content 注入的实践参考 |
+| [diegosouzapw/OmniRoute](https://github.com/diegosouzapw/OmniRoute) | 免费代理源体系设计（1proxy 质量分 / IPLocate GitHub 列表 / Proxifly 匿名度过滤）与 IP 出口可见性探查 |
 | [tashfeenahmed/freellmapi](https://github.com/tashfeenahmed/freellmapi) | 健康检查的节奏纪律（抖动间隔、乱序采样、最小间距防风控）参考其设计 |
 | [opencode2api 系列](https://github.com/search?q=opencode2api&type=repositories) | 在同一上游生产环境验证了 `prompt_cache_retention` 等缓存字段与粘性会话的真实收益 |
 | [SagerNet/sing-box](https://github.com/SagerNet/sing-box) | 内嵌核心：vless / vmess / trojan / ss / hysteria2 / tuic 分享链接解析与本地多协议出口全部由它驱动 |
