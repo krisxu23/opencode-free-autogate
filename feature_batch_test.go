@@ -123,6 +123,59 @@ func TestEnhanceRequestBody(t *testing.T) {
 	}
 }
 
+func TestReasoningContentInjection(t *testing.T) {
+	multi := func(model string) []byte {
+		return []byte(`{"model":"` + model + `","messages":[` +
+			`{"role":"user","content":"q"},` +
+			`{"role":"assistant","content":"a1"},` +
+			`{"role":"assistant","content":"a2","reasoning_content":"real thinking"},` +
+			`{"role":"assistant","content":"a3","tool_calls":[{"id":"c1"}]}` +
+			`],"stream":false}`)
+	}
+	msgAt := func(t *testing.T, payload map[string]any, i int) map[string]any {
+		t.Helper()
+		msgs, _ := payload["messages"].([]any)
+		entry, _ := msgs[i].(map[string]any)
+		return entry
+	}
+
+	// deepseek 系：所有 assistant 消息补占位；已有非空内容保留。
+	var d map[string]any
+	json.Unmarshal(enhanceRequestBody(multi("deepseek-v4-flash-free"), false), &d)
+	if got, _ := msgAt(t, d, 1)["reasoning_content"].(string); got != " " {
+		t.Fatalf("deepseek 普通助手消息应补占位，got %q", got)
+	}
+	if got, _ := msgAt(t, d, 2)["reasoning_content"].(string); got != "real thinking" {
+		t.Fatal("已有非空 reasoning_content 不应覆盖")
+	}
+	if got, _ := msgAt(t, d, 3)["reasoning_content"].(string); got != " " {
+		t.Fatalf("deepseek 带 tool_calls 也应补占位，got %q", got)
+	}
+
+	// kimi 系：只补带 tool_calls 的 assistant 消息。
+	var k map[string]any
+	json.Unmarshal(enhanceRequestBody(multi("kimi-k2.7-code"), false), &k)
+	if _, ok := msgAt(t, k, 1)["reasoning_content"]; ok {
+		t.Fatal("kimi 无 tool_calls 的消息不应补")
+	}
+	if got, _ := msgAt(t, k, 3)["reasoning_content"].(string); got != " " {
+		t.Fatalf("kimi 带 tool_calls 应补占位，got %q", got)
+	}
+
+	// minimax 系：大小写不敏感，全量补。
+	var mm map[string]any
+	json.Unmarshal(enhanceRequestBody(multi("MiniMax-M3"), false), &mm)
+	if got, _ := msgAt(t, mm, 1)["reasoning_content"].(string); got != " " {
+		t.Fatal("minimax 应全量补占位")
+	}
+
+	// 非思考系模型：一字节都不动。
+	plain := []byte(`{"model":"big-pickle","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"yo"}]}`)
+	if got := enhanceRequestBody(plain, false); string(got) != string(plain) {
+		t.Fatalf("非思考系模型不应改动请求体: %s", got)
+	}
+}
+
 func TestTryLocalHousekeeping(t *testing.T) {
 	localMocksEnabled = true
 	defer func() { localMocksEnabled = true }()

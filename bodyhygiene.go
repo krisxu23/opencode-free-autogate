@@ -40,6 +40,33 @@ func enhanceRequestBody(body []byte, injectCache bool) []byte {
 		changed = true
 	}
 
+	// 思考系模型补丁（OCFreeRelay/9router/OmniRoute 三家共识）：
+	// deepseek/kimi/minimax 系多轮对话要求 assistant 历史消息携带
+	// reasoning_content，OpenAI 格式客户端不发该字段 → 上游 400 拒绝
+	// 整个请求、白烧出口尝试。缺字段时注入单空格占位符。
+	if msgs, ok := payload["messages"].([]any); ok && model != "" {
+		injected := false
+		for _, m := range msgs {
+			entry, ok := m.(map[string]any)
+			if !ok {
+				continue
+			}
+			role, _ := entry["role"].(string)
+			_, hasToolCalls := entry["tool_calls"]
+			if !needsReasoningContent(model, role, hasToolCalls) {
+				continue
+			}
+			if rc, ok := entry["reasoning_content"].(string); ok && rc != "" {
+				continue // 已有非空内容不覆盖
+			}
+			entry["reasoning_content"] = " "
+			injected = true
+		}
+		if injected {
+			changed = true
+		}
+	}
+
 	if raw, ok := payload["tools"].([]any); ok {
 		cleaned := make([]any, 0, len(raw))
 		for _, item := range raw {
@@ -109,6 +136,23 @@ func hasFunctionName(item any) bool {
 
 // glmZhipuRe 是拒绝 cache_control 字段的模型前缀黑名单。
 var glmZhipuRe = regexp.MustCompile(`(?i)^(glm|zhipu|z-ai|zai)`)
+
+// needsReasoningContent 判断该消息是否需要补 reasoning_content 占位：
+//   - kimi 系：只要求带 tool_calls 的 assistant 消息（9router 实测规则）
+//   - deepseek / minimax 系：所有 assistant 消息
+func needsReasoningContent(model, role string, hasToolCalls bool) bool {
+	if role != "assistant" {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.HasPrefix(lower, "kimi"):
+		return hasToolCalls
+	case strings.Contains(lower, "deepseek"), strings.Contains(lower, "minimax"):
+		return true
+	}
+	return false
+}
 
 func rejectsCacheControl(model string) bool {
 	return glmZhipuRe.MatchString(strings.TrimSpace(model))
