@@ -27,6 +27,7 @@ type uiSettings struct {
 	FirstByteSeconds int      `json:"first_byte_seconds"` // 流式首字节超时，秒
 	BudgetSeconds    int      `json:"budget_seconds"`     // 流式总预算，秒
 	DeepProbeMinutes int      `json:"deep_probe_minutes"` // chat 深检间隔，分钟
+	ProbeModel       string   `json:"probe_model"`        // chat 深检模型；空 = 自动（big-pickle）
 	GatewayKey       string   `json:"gateway_key"`        // 展示用的默认 Key
 	PoolEnabled      bool     `json:"pool_enabled"`       // 在线节点池开关
 	PoolInput        string   `json:"pool_input"`         // 节点源链接，回填输入框
@@ -105,6 +106,8 @@ func (s uiSettings) normalized() uiSettings {
 	if strings.TrimSpace(s.GatewayKey) == "" {
 		s.GatewayKey = defaultGatewayKey
 	}
+	// 深检模型只做去空白；允许填任意 ID（上游临时下架时由校准哨兵告警）。
+	s.ProbeModel = strings.TrimSpace(s.ProbeModel)
 	// PoolInput 允许为空：节点池源完全由用户填写（公共推荐源见 README）。
 	if len(s.Proxies) == 0 && strings.TrimSpace(s.ProxyInput) != "" {
 		s.Proxies, _ = ParseProxyInput(s.ProxyInput)
@@ -153,6 +156,9 @@ func (s uiSettings) applyEnv() {
 	setIfEmpty("PROXY_FIRST_BYTE_TIMEOUT", fmt.Sprintf("%d", s.FirstByteSeconds*1000))
 	setIfEmpty("HARD_TIMEOUT", fmt.Sprintf("%d", s.BudgetSeconds*1000))
 	setIfEmpty("PROXY_DEEP_PROBE_INTERVAL", fmt.Sprintf("%d", s.DeepProbeMinutes*60000))
+	if s.ProbeModel != "" {
+		setIfEmpty("PROXY_PROBE_MODEL", s.ProbeModel)
+	} // 空 = 不设置，config.go 回落 big-pickle
 	if s.PoolEnabled {
 		if urls := parsePoolSources(s.PoolInput); len(urls) > 0 {
 			setIfEmpty("PROXY_LIST_URLS", strings.Join(urls, ","))

@@ -60,6 +60,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 	settings.FirstByteSeconds = 45
 	settings.BudgetSeconds = 200
 	settings.DeepProbeMinutes = 30
+	settings.ProbeModel = "big-pickle"
 
 	if err := settings.save(path); err != nil {
 		t.Fatalf("save failed: %v", err)
@@ -76,6 +77,9 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 	if loaded.DeepProbeMinutes != 30 {
 		t.Fatalf("deep probe minutes = %d", loaded.DeepProbeMinutes)
+	}
+	if loaded.ProbeModel != "big-pickle" {
+		t.Fatalf("probe model = %q", loaded.ProbeModel)
 	}
 	if len(loaded.Mirrors) != len(defaultMirrorURLs) {
 		t.Fatalf("mirrors = %v", loaded.Mirrors)
@@ -228,6 +232,14 @@ func TestApplyEnvRespectsExistingEnvironment(t *testing.T) {
 	}
 	if got := envInt("PROXY_DEEP_PROBE_INTERVAL", 0); got != 60*60000 {
 		t.Fatalf("deep probe ms = %d", got)
+	}
+	if got := envString("PROXY_PROBE_MODEL", ""); got != "" {
+		t.Fatalf("empty probe model must not set env, got %q", got)
+	}
+	settings.ProbeModel = "gemini-3-flash-free"
+	settings.applyEnv()
+	if got := envString("PROXY_PROBE_MODEL", ""); got != "gemini-3-flash-free" {
+		t.Fatalf("probe model env = %q", got)
 	}
 	if got := envString("MIRROR_URLS", ""); !strings.Contains(got, "cmliussss.net") {
 		t.Fatalf("mirrors = %q", got)

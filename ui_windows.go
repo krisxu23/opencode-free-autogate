@@ -58,6 +58,7 @@ type gatewayUI struct {
 	firstByte     *walk.NumberEdit
 	budget        *walk.NumberEdit
 	deepProbe     *walk.NumberEdit
+	probeModelBox *walk.ComboBox
 	outboundBox   *walk.ComboBox
 	logCursor     int
 	modelsSeen    string
@@ -199,6 +200,18 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 											dcl.Label{Text: "秒     深检间隔"},
 											dcl.NumberEdit{AssignTo: &ui.deepProbe, Value: float64(settings.DeepProbeMinutes), MinValue: 10, MaxValue: 1440, Decimals: 0, MaxSize: dcl.Size{Width: 70}},
 											dcl.Label{Text: "分"},
+										},
+									},
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.Label{Text: "深检模型（真实对话探测专用；列表来自上游实时拉取）:"},
+											dcl.ComboBox{
+												AssignTo: &ui.probeModelBox,
+												Model:    probeModelSeed(settings.ProbeModel),
+												MinSize:  dcl.Size{Width: 260},
+											},
+											dcl.HSpacer{},
 										},
 									},
 									dcl.Label{Text: "代理节点（一行一个；支持 socks5/http、vless://、vmess://、trojan://、ss://、hysteria2://(hy2)、tuic:// 分享链接；手动节点不会被自动删除）:"},
@@ -438,11 +451,46 @@ func (ui *gatewayUI) modelWatcher() {
 			text := strings.Join(ids, "\r\n")
 			if text != ui.modelsSeen {
 				ui.modelsSeen = text
-				ui.window.Synchronize(func() { ui.modelsEdit.SetText(text) })
+				ui.window.Synchronize(func() {
+					ui.modelsEdit.SetText(text)
+					ui.syncProbeModelBox(ids)
+				})
 			}
 		}
 		time.Sleep(60 * time.Second)
 	}
+}
+
+// probeModelSeed 生成下拉框的初始候补：优先用已保存的选择，否则默认
+// big-pickle。真实列表由 modelWatcher 拉到后替换。
+func probeModelSeed(saved string) []string {
+	if saved = strings.TrimSpace(saved); saved != "" {
+		return []string{saved}
+	}
+	return []string{"big-pickle"}
+}
+
+// syncProbeModelBox 用上游实时模型列表刷新下拉框，并尽量选回已保存/当前
+// 生效的值；若该值已从上游下架，则置顶保留显示——用户能看到现在实际用
+// 的是哪个，也随时可以换。
+func (ui *gatewayUI) syncProbeModelBox(ids []string) {
+	chosen := strings.TrimSpace(ui.probeModelBox.Text())
+	if chosen == "" {
+		chosen = strings.TrimSpace(ui.settings.ProbeModel)
+	}
+	if chosen == "" {
+		chosen = "big-pickle"
+	}
+	for i, id := range ids {
+		if id == chosen {
+			ui.probeModelBox.SetModel(ids)
+			ui.probeModelBox.SetCurrentIndex(i)
+			return
+		}
+	}
+	padded := append([]string{chosen}, ids...)
+	ui.probeModelBox.SetModel(padded)
+	ui.probeModelBox.SetCurrentIndex(0)
 }
 
 func (ui *gatewayUI) copyText(text, label string) {
@@ -466,6 +514,7 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 	next.FirstByteSeconds = int(ui.firstByte.Value())
 	next.BudgetSeconds = int(ui.budget.Value())
 	next.DeepProbeMinutes = int(ui.deepProbe.Value())
+	next.ProbeModel = strings.TrimSpace(ui.probeModelBox.Text())
 	next.ProxyInput = ui.proxyEdit.Text()
 	next.MirrorInput = ui.mirrorEdit.Text()
 	next.PoolEnabled = ui.poolCheck.Checked()
@@ -497,6 +546,12 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 		report.WriteString("并行竞速：开启（最快出口胜出）\r\n")
 	} else {
 		report.WriteString("并行竞速：关闭\r\n")
+	}
+	fmt.Fprintf(&report, "深检间隔：%d 分钟\r\n", next.DeepProbeMinutes)
+	if next.ProbeModel != "" {
+		fmt.Fprintf(&report, "深检模型：%s\r\n", next.ProbeModel)
+	} else {
+		report.WriteString("深检模型：自动（big-pickle）\r\n")
 	}
 	fmt.Fprintf(&report, "上游镜像：可用 %d 个", len(mirrors))
 	if len(mirrorErrors) > 0 {
@@ -565,6 +620,7 @@ func restartEnv() []string {
 		"PROXY_FIRST_BYTE_TIMEOUT":  {}, // 流式首字节超时
 		"HARD_TIMEOUT":              {}, // 流式总预算
 		"PROXY_DEEP_PROBE_INTERVAL": {}, // chat 深检间隔
+		"PROXY_PROBE_MODEL":         {}, // chat 深检模型
 		"PROXY_LIST_URLS":           {}, // 节点池源链接
 		"PROXY_RACE":                {}, // 并行竞速开关
 		"PROXY_RACE_WIDTH":          {}, // 竞速并发宽度
