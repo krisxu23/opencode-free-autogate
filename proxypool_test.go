@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -114,5 +118,44 @@ func TestSampleSlots(t *testing.T) {
 	}
 	if len(sampleSlots(items, 2000)) != 1000 {
 		t.Fatal("limit 大于长度时应返回原列表")
+	}
+}
+
+// 直连拉不到源时经现有出口兜底：第一个出口是本地必拒端口（秒级失败），
+// 第二个出口由 httptest 假代理扮演，应成功带回源内容。
+func TestFetchSourceViaExits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("9.9.9.9:1080\n8.8.8.8:1080\n"))
+	}))
+	defer srv.Close()
+	dead, _ := url.Parse("http://127.0.0.1:1")
+	live, _ := url.Parse(srv.URL)
+	gw := &gateway{}
+	gw.mu.Lock()
+	gw.custom = []slot{
+		{addr: "127.0.0.1:1", proxyURL: dead},
+		{addr: "live-exit", proxyURL: live},
+	}
+	gw.mu.Unlock()
+
+	body, status, err := gw.fetchSourceViaExits(context.Background(), "http://example.invalid/list.txt")
+	if err != nil {
+		t.Fatalf("经出口兜底拉取失败: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, 期望 200", status)
+	}
+	if !strings.Contains(string(body), "9.9.9.9:1080") {
+		t.Fatalf("body 内容不符: %q", string(body))
+	}
+}
+
+// 池为空时应干净返回错误而不是 panic。
+func TestFetchSourceViaExitsEmptyPool(t *testing.T) {
+	gw := &gateway{}
+	_, _, err := gw.fetchSourceViaExits(context.Background(), "http://example.invalid/list.txt")
+	if err == nil || !strings.Contains(err.Error(), "无可用出口") {
+		t.Fatalf("期望 无可用出口 错误，实际 %v", err)
 	}
 }

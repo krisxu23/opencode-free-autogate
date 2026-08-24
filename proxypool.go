@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -248,6 +250,8 @@ func (g *gateway) refreshPool(ctx context.Context) {
 
 // fetchPoolSources 逐个拉取节点源，自动识别 JSON（amux 风格）、纯文本列表与
 // base64 订阅（机场订阅）。返回普通代理槽位与高级协议链接两个列表。
+// 直连失败时自动改经最多 2 个健康出口重试：源站点（GitHub raw、境外 API 等）
+// 在本地直连不通时，出口池就是现成的通道——源获取与上游请求同一哲学。
 func (g *gateway) fetchPoolSources(ctx context.Context, urls []string) ([]slot, []string) {
 	client := &http.Client{Transport: controlTransport(poolFetchTimeout)}
 	defer client.CloseIdleConnections()
@@ -263,24 +267,15 @@ func (g *gateway) fetchPoolSources(ctx context.Context, urls []string) ([]slot, 
 		if source == "" {
 			continue
 		}
-		fetchCtx, cancel := context.WithTimeout(ctx, poolFetchTimeout)
-		req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, source, nil)
+		body, status, err := fetchViaClient(ctx, client, source)
 		if err != nil {
-			cancel()
-			log.Printf("[池] 源无效: %s", shortSource(source))
-			continue
-		}
-		res, err := client.Do(req)
-		if err != nil {
-			cancel()
 			log.Printf("[池] 拉取失败 %s: %v", shortSource(source), err)
+			body, status, err = g.fetchSourceViaExits(ctx, source)
+		}
+		if err != nil {
 			continue
 		}
-		body, readErr := io.ReadAll(io.LimitReader(res.Body, 8<<20))
-		status := res.StatusCode
-		res.Body.Close()
-		cancel()
-		if readErr != nil || status < 200 || status >= 300 {
+		if status < 200 || status >= 300 {
 			log.Printf("[池] 拉取失败 %s: status=%d", shortSource(source), status)
 			continue
 		}
@@ -288,6 +283,56 @@ func (g *gateway) fetchPoolSources(ctx context.Context, urls []string) ([]slot, 
 		log.Printf("[池] %s -> %d 条", shortSource(source), count)
 	}
 	return out, advanced
+}
+
+// fetchViaClient 用给定 client 拉取一个源，返回 body/status/error。
+func fetchViaClient(ctx context.Context, client *http.Client, source string) ([]byte, int, error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, poolFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, source, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	body, readErr := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	status := res.StatusCode
+	res.Body.Close()
+	if readErr != nil {
+		return nil, status, readErr
+	}
+	return body, status, nil
+}
+
+// fetchSourceViaExits 直连失败后的兜底：等距抽样最多 2 个现有出口，逐个经出口
+// 拉取源，任一成功即返回。全部失败时返回最后一次错误；池为空直接报无可用出口。
+func (g *gateway) fetchSourceViaExits(ctx context.Context, source string) ([]byte, int, error) {
+	pool := sampleSlots(g.customSnapshot(), 2)
+	lastErr := errors.New("无可用出口")
+	for _, s := range pool {
+		if ctx.Err() != nil || s.proxyURL == nil {
+			continue
+		}
+		client := &http.Client{Transport: requestTransport(s.proxyURL), Timeout: poolFetchTimeout}
+		body, status, err := fetchViaClient(ctx, client, source)
+		client.CloseIdleConnections()
+		addr := s.addr
+		if len(addr) > 42 {
+			addr = addr[:39] + "..."
+		}
+		if err == nil && status >= 200 && status < 300 {
+			log.Printf("[池] 经出口 %s 拉取成功", addr)
+			return body, status, nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("status=%d", status)
+		}
+	}
+	return nil, 0, lastErr
 }
 
 // appendPoolBody 解析单个源的响应体，返回解析出的条数。
