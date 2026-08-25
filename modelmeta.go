@@ -179,6 +179,7 @@ func httpGetBody(url string, proxyURL *url.URL) ([]byte, error) {
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 	client := &http.Client{Timeout: 30 * time.Second, Transport: transport}
+	defer client.CloseIdleConnections()
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, err

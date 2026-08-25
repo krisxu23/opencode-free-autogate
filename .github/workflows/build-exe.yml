@@ -12,6 +12,11 @@ on:
 permissions:
   contents: write
 
+# 连续 push 只保留最新一次构建：避免并行运行互相删除/重建 exe-latest release。
+concurrency:
+  group: build-exe-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -22,9 +27,11 @@ jobs:
         with:
           go-version: "1.24"
 
+      # go.sum 已入库：tidy 后必须无变更，否则说明依赖清单与代码不同步。
       - name: Resolve dependencies
         run: |
           go mod tidy
+          git diff --exit-code -- go.mod go.sum
           go mod download
 
       # 仅提示不阻断：发现未格式化文件时打印清单
@@ -69,8 +76,9 @@ jobs:
           $exe = "opencode-free-autogate-gui.exe"
           $icon = [System.Drawing.Icon]::ExtractAssociatedIcon("$PWD\$exe")
           if ($null -eq $icon) { throw "GUI exe 缺少图标资源" }
-          $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes("$PWD\$exe"))
-          if (-not $text.Contains("Microsoft.Windows.Common-Controls")) { throw "GUI exe 缺少 Common-Controls 清单（walk 窗口将无法创建）" }
+          # findstr 流式扫描，不把整个 exe 读进内存再转字符串。
+          cmd /c "findstr /m /c:Microsoft.Windows.Common-Controls $exe"
+          if ($LASTEXITCODE -ne 0) { throw "GUI exe 缺少 Common-Controls 清单（walk 窗口将无法创建）" }
           $proc = Start-Process -FilePath "$PWD\$exe" -PassThru -WorkingDirectory $PWD
           Start-Sleep -Seconds 5
           if ($proc.HasExited) { throw "GUI exe 启动后立即退出，退出码 $($proc.ExitCode)" }

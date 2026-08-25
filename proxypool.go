@@ -197,7 +197,7 @@ func (g *gateway) refreshPool(ctx context.Context) {
 		fresh = append(fresh, s)
 	}
 	if len(fresh) > poolMaxCandidates {
-		fresh = sampleSlots(fresh, poolMaxCandidates)
+		fresh = sampleEvenly(fresh, poolMaxCandidates)
 	}
 
 	added := 0
@@ -309,13 +309,13 @@ func fetchViaClient(ctx context.Context, client *http.Client, source string) ([]
 // fetchSourceViaExits 直连失败后的兜底：等距抽样最多 2 个现有出口，逐个经出口
 // 拉取源，任一成功即返回。全部失败时返回最后一次错误；池为空直接报无可用出口。
 func (g *gateway) fetchSourceViaExits(ctx context.Context, source string) ([]byte, int, error) {
-	pool := sampleSlots(g.customSnapshot(), 2)
+	pool := sampleEvenly(g.customSnapshot(), 2)
 	lastErr := errors.New("无可用出口")
 	for _, s := range pool {
 		if ctx.Err() != nil || s.proxyURL == nil {
 			continue
 		}
-		client := &http.Client{Transport: requestTransport(s.proxyURL), Timeout: poolFetchTimeout}
+		client := &http.Client{Transport: requestTransport(s.proxyURL, g.cfg.transportDialTimeout, g.cfg.tlsInsecure), Timeout: poolFetchTimeout}
 		body, status, err := fetchViaClient(ctx, client, source)
 		client.CloseIdleConnections()
 		addr := s.addr
@@ -490,12 +490,12 @@ func (g *gateway) customSnapshot() []slot {
 	return append([]slot(nil), g.custom...)
 }
 
-// sampleSlots 等距抽样，避免单轮探活过多候选。
-func sampleSlots(items []slot, limit int) []slot {
+// sampleEvenly 等距抽样，避免单轮探活过多候选。
+func sampleEvenly[T any](items []T, limit int) []T {
 	if len(items) <= limit {
 		return items
 	}
-	out := make([]slot, 0, limit)
+	out := make([]T, 0, limit)
 	step := float64(len(items)) / float64(limit)
 	for i := 0; i < limit; i++ {
 		out = append(out, items[int(float64(i)*step)])

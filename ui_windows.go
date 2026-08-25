@@ -124,7 +124,7 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 									}},
 
 									dcl.Label{
-										Text:       "Key 填任意非空字符串均可通过（当前未启用校验）。Anthropic 客户端把地址末尾换成 /anthropic/v1。",
+										Text:       "设置环境变量 GATEWAY_KEY 后启用 Bearer 校验；未设置时不校验（默认仅本机监听）。Anthropic 客户端把地址末尾换成 /anthropic/v1。",
 										ColumnSpan: 3,
 									},
 								},
@@ -611,27 +611,16 @@ func restartSelf() error {
 }
 
 // restartEnv 剔除由 config.json 派生的环境变量，避免旧值覆盖新配置。
+// 受管键清单与 applyEnv 共用 settings.go 里的 configManagedEnvKeys。
 func restartEnv() []string {
-	managed := map[string]struct{}{
-		"PORT":                      {}, // 网关端口
-		"PROXY_ORDER":               {}, // 出站模式
-		"CUSTOM_PROXIES":            {}, // 自定义代理
-		"MIRROR_URLS":               {}, // 上游镜像
-		"PROXY_FIRST_BYTE_TIMEOUT":  {}, // 流式首字节超时
-		"HARD_TIMEOUT":              {}, // 流式总预算
-		"PROXY_DEEP_PROBE_INTERVAL": {}, // chat 深检间隔
-		"PROXY_PROBE_MODEL":         {}, // chat 深检模型
-		"PROXY_LIST_URLS":           {}, // 节点池源链接
-		"PROXY_RACE":                {}, // 并行竞速开关
-		"PROXY_RACE_WIDTH":          {}, // 竞速并发宽度
+	managed := make(map[string]struct{}, len(configManagedEnvKeys))
+	for _, key := range configManagedEnvKeys {
+		managed[key] = struct{}{}
 	}
 	env := os.Environ()
 	kept := make([]string, 0, len(env))
 	for _, entry := range env {
-		name := entry
-		if i := strings.Index(entry, "="); i >= 0 {
-			name = entry[:i]
-		}
+		name, _, _ := strings.Cut(entry, "=")
 		if _, skip := managed[strings.ToUpper(name)]; skip {
 			continue
 		}

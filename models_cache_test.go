@@ -48,7 +48,7 @@ func TestModelMapsRetriesUntilFirstSuccess(t *testing.T) {
 
 	gw := newGateway(config{project: projectSpec{upstream: upstream.URL, modelPath: "/zen/v1/models", modelMode: modelOpenCode}})
 
-	// 第一次：失败，得到兜底（specialModels 可能为空，但不应 panic）。
+	// 第一次：失败，得到兜底（免费模型清单可能为空，但不应 panic）。
 	if _, redirect := gw.modelMaps(context.Background()); redirect == nil {
 		t.Fatal("失败路径也应返回可用映射")
 	}

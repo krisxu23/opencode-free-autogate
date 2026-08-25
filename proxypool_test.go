@@ -49,10 +49,10 @@ func TestParsePoolLine(t *testing.T) {
 
 func TestNormalizeSourceURL(t *testing.T) {
 	cases := map[string]string{
-		"https://github.com/roosterkid/openproxylist/blob/main/SOCKS5.txt":            "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5.txt",
-		"https://github.com/a/b/blob/main/x.txt?plain=1":                              "https://raw.githubusercontent.com/a/b/main/x.txt",
-		"https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt":    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
-		"  https://bestcf.pages.dev/s5gy/all.txt#fragment ":                           "https://bestcf.pages.dev/s5gy/all.txt",
+		"https://github.com/roosterkid/openproxylist/blob/main/SOCKS5.txt":         "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5.txt",
+		"https://github.com/a/b/blob/main/x.txt?plain=1":                           "https://raw.githubusercontent.com/a/b/main/x.txt",
+		"https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt": "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
+		"  https://bestcf.pages.dev/s5gy/all.txt#fragment ":                        "https://bestcf.pages.dev/s5gy/all.txt",
 	}
 	for input, want := range cases {
 		if got := normalizeSourceURL(input); got != want {
@@ -107,16 +107,16 @@ func TestAppendPoolBodyBase64Subscription(t *testing.T) {
 	}
 }
 
-func TestSampleSlots(t *testing.T) {
+func TestSampleEvenly(t *testing.T) {
 	items := make([]slot, 1000)
 	for i := range items {
 		items[i] = slot{addr: string(rune('a' + i%26))}
 	}
-	got := sampleSlots(items, 400)
+	got := sampleEvenly(items, 400)
 	if len(got) != 400 {
 		t.Fatalf("期望抽样 400 条，实际 %d", len(got))
 	}
-	if len(sampleSlots(items, 2000)) != 1000 {
+	if len(sampleEvenly(items, 2000)) != 1000 {
 		t.Fatal("limit 大于长度时应返回原列表")
 	}
 }

@@ -14,8 +14,10 @@ import (
 // 携带按请求变化的超时参数。条目闲置超过阈值后由后台清扫回收；已被取出
 // 的 transport 即使被回收也仍可安全使用，只是不再接受新连接。
 type transportPool struct {
-	mu      sync.Mutex
-	entries map[string]*transportEntry
+	mu          sync.Mutex
+	entries     map[string]*transportEntry
+	dialTimeout time.Duration // 拨号/TLS 握手超时，启动时由 loadConfig 注入
+	tlsInsecure bool          // INSECURE_TLS=1 时放行非标证书
 }
 
 type transportEntry struct {
@@ -24,6 +26,14 @@ type transportEntry struct {
 }
 
 var sharedTransports = &transportPool{entries: make(map[string]*transportEntry)}
+
+// configure 在启动阶段一次性注入拨号参数；此后 get 构造的 transport 均携带。
+func (p *transportPool) configure(dialTimeout time.Duration, tlsInsecure bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.dialTimeout = dialTimeout
+	p.tlsInsecure = tlsInsecure
+}
 
 func (p *transportPool) get(proxyURL *url.URL) *http.Transport {
 	key := ""
@@ -36,7 +46,7 @@ func (p *transportPool) get(proxyURL *url.URL) *http.Transport {
 		entry.lastUsed = time.Now()
 		return entry.transport
 	}
-	transport := requestTransport(proxyURL)
+	transport := requestTransport(proxyURL, p.dialTimeout, p.tlsInsecure)
 	p.entries[key] = &transportEntry{transport: transport, lastUsed: time.Now()}
 	return transport
 }

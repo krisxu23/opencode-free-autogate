@@ -12,25 +12,25 @@ import (
 // advNode 是一条高级协议分享链接解析后的统一形态，
 // 之后由内嵌 sing-box 实例把它变成一个本地 SOCKS5 端点。
 type advNode struct {
-	tag          string
-	kind         string // vless | vmess | trojan | ss | hysteria2 | tuic
-	server       string
-	port         uint16
-	uuid         string // vless / vmess / tuic 用户 ID
-	password     string // trojan / ss / hysteria2 / tuic 密码
-	method       string // ss 加密方法
-	flow         string // vless xtls-rprx-vision 等
-	tls          bool
-	serverName   string
+	tag           string
+	kind          string // vless | vmess | trojan | ss | hysteria2 | tuic
+	server        string
+	port          uint16
+	uuid          string // vless / vmess / tuic 用户 ID
+	password      string // trojan / ss / hysteria2 / tuic 密码
+	method        string // ss 加密方法
+	flow          string // vless xtls-rprx-vision 等
+	tls           bool
+	serverName    string
 	allowInsecure bool
-	realityPBK   string
-	realitySID   string
-	transport    string // ""(tcp) | ws | grpc | httpupgrade
-	wsPath       string
-	wsHost       string
-	grpcService  string
-	alpn         string
-	obfsPassword string // hysteria2 obfs
+	realityPBK    string
+	realitySID    string
+	transport     string // ""(tcp) | ws | grpc | httpupgrade
+	wsPath        string
+	wsHost        string
+	grpcService   string
+	alpn          string
+	obfsPassword  string // hysteria2 obfs
 }
 
 var advancedSchemes = map[string]string{
@@ -157,18 +157,18 @@ func parseVMessLink(link string) (*advNode, error) {
 	// 形态一：base64 JSON
 	if decoded, err := decodeBase64Any(body); err == nil && strings.HasPrefix(strings.TrimSpace(decoded), "{") {
 		var raw struct {
-			Add    string      `json:"add"`
-			Port   interface{} `json:"port"`
-			ID     string      `json:"id"`
-			Aid    interface{} `json:"aid"`
-			Scy    string      `json:"scy"`
-			Net    string      `json:"net"`
-			Type   string      `json:"type"`
-			Host   string      `json:"host"`
-			Path   string      `json:"path"`
-			TLS    string      `json:"tls"`
-			SNI    string      `json:"sni"`
-			Ps     string      `json:"ps"`
+			Add  string      `json:"add"`
+			Port interface{} `json:"port"`
+			ID   string      `json:"id"`
+			Aid  interface{} `json:"aid"`
+			Scy  string      `json:"scy"`
+			Net  string      `json:"net"`
+			Type string      `json:"type"`
+			Host string      `json:"host"`
+			Path string      `json:"path"`
+			TLS  string      `json:"tls"`
+			SNI  string      `json:"sni"`
+			Ps   string      `json:"ps"`
 		}
 		if err := json.Unmarshal([]byte(decoded), &raw); err != nil {
 			return nil, fmt.Errorf("vmess JSON 解析失败: %w", err)
@@ -267,8 +267,8 @@ func parseSSLink(link string) (*advNode, error) {
 }
 
 func splitMethodPass(s string) (string, string) {
-	if i := strings.Index(s, ":"); i > 0 {
-		return s[:i], s[i+1:]
+	if method, pass, ok := strings.Cut(s, ":"); ok && method != "" {
+		return method, pass
 	}
 	return "", s
 }

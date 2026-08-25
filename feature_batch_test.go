@@ -51,12 +51,12 @@ func TestClassifyUpstreamFailure(t *testing.T) {
 
 func TestParseResetHint(t *testing.T) {
 	cases := map[string]time.Duration{
-		`Rate limit exceeded. Resets in 13 hours.`:      13 * time.Hour,
-		`please try again in 20 minutes`:                20 * time.Minute,
-		`quota resets in 45 secs`:                       45 * time.Second,
-		`try again after 2 days`:                        48 * time.Hour,
-		`no hint here`:                                  0,
-		`resets in zero hours`:                          0,
+		`Rate limit exceeded. Resets in 13 hours.`: 13 * time.Hour,
+		`please try again in 20 minutes`:           20 * time.Minute,
+		`quota resets in 45 secs`:                  45 * time.Second,
+		`try again after 2 days`:                   48 * time.Hour,
+		`no hint here`:                             0,
+		`resets in zero hours`:                     0,
 	}
 	for body, want := range cases {
 		if got := parseResetHint([]byte(body)); got != want {
@@ -177,15 +177,12 @@ func TestReasoningContentInjection(t *testing.T) {
 }
 
 func TestTryLocalHousekeeping(t *testing.T) {
-	localMocksEnabled = true
-	defer func() { localMocksEnabled = true }()
-
 	hit := map[string]any{
 		"model":      "big-pickle",
 		"max_tokens": float64(16),
 		"messages":   []any{map[string]any{"role": "user", "content": "check my quota status"}},
 	}
-	canned, ok := tryLocalHousekeeping("/v1/chat/completions", false, hit)
+	canned, ok := tryLocalHousekeeping(true, "/v1/chat/completions", false, hit)
 	if !ok || canned == nil {
 		t.Fatal("配额探测请求应被本地拦截")
 	}
@@ -195,9 +192,9 @@ func TestTryLocalHousekeeping(t *testing.T) {
 	}
 
 	misses := []struct {
-		name string
-		path string
-		stream bool
+		name    string
+		path    string
+		stream  bool
 		payload map[string]any
 	}{
 		{"流式请求放行", "/v1/chat/completions", true, hit},
@@ -223,13 +220,12 @@ func TestTryLocalHousekeeping(t *testing.T) {
 		}},
 	}
 	for _, mc := range misses {
-		if _, ok := tryLocalHousekeeping(mc.path, mc.stream, mc.payload); ok {
+		if _, ok := tryLocalHousekeeping(true, mc.path, mc.stream, mc.payload); ok {
 			t.Fatalf("%s 不应被拦截", mc.name)
 		}
 	}
 
-	localMocksEnabled = false
-	if _, ok := tryLocalHousekeeping("/v1/chat/completions", false, hit); ok {
+	if _, ok := tryLocalHousekeeping(false, "/v1/chat/completions", false, hit); ok {
 		t.Fatal("开关关闭时应整体放行")
 	}
 }

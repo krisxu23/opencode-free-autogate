@@ -44,6 +44,10 @@ func main() {
 	}
 
 	cfg := loadConfig(currentProject())
+	// 非回环监听会把网关暴露给局域网/外网：没有认证凭据就拒绝启动，宁可失败不可裸奔。
+	if !isLoopbackListen(cfg.listenAddr) && cfg.gatewayKey == "" {
+		log.Fatalf("[门] LISTEN_ADDR=%s 会把网关暴露到局域网/外网：请先设置 GATEWAY_KEY（客户端需携带 Bearer 认证），或保持默认 127.0.0.1 仅本机监听", cfg.listenAddr)
+	}
 	gw := newGateway(cfg)
 	handler := &app{gateway: gw}
 
@@ -115,6 +119,21 @@ func listenAndServeWithRetry(server *http.Server) error {
 	}
 }
 
+// isLoopbackListen 判断监听地址是否仅回环可达（localhost / 127.x / ::1）。
+func isLoopbackListen(addr string) bool {
+	host := strings.TrimSpace(addr)
+	if host == "" || host == "localhost" {
+		return true
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if ip := net.ParseIP(strings.ToLower(host)); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 func logStartup(cfg config) {
 	log.Printf("[门] http://localhost:%d", cfg.port)
 	log.Printf("[门] 项目:      %s", cfg.project.displayName)
@@ -161,12 +180,13 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Path == "/" || r.URL.Path == "/v1" {
+		// 该端点无认证：只报数量不回显地址，节点列表属于敏感拓扑信息。
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":      "ok",
 			"upstream":    a.gateway.cfg.project.upstream,
 			"mode":        a.gateway.cfg.proxyMode,
-			"slots":       a.gateway.slotAddresses(false),
-			"customSlots": a.gateway.slotAddresses(true),
+			"slots":       a.gateway.slotCount(),
+			"customSlots": a.gateway.customCount(),
 		})
 		return
 	}
@@ -265,30 +285,35 @@ func (a *app) handlePost(w http.ResponseWriter, r *http.Request, path string, de
 	ids := deriveRequestIDs(r.Header, payload)
 	stream := wantsStream(r.Header, payload)
 	// 本地管家拦截：客户端的配额探测类请求零上游消耗直接应答。
-	if a.gateway.cfg.localMocks {
-		if canned, hit := tryLocalHousekeeping(path, stream, payload); hit {
-			trace.finalProxy = "local"
-			return &gatewayResponse{
-				status: http.StatusOK,
-				header: http.Header{"Content-Type": []string{"application/json; charset=utf-8"}},
-				body:   canned,
-			}, nil, nil
-		}
+	if canned, hit := tryLocalHousekeeping(a.gateway.cfg.localMocks, path, stream, payload); hit {
+		trace.finalProxy = "local"
+		return &gatewayResponse{
+			status: http.StatusOK,
+			header: http.Header{"Content-Type": []string{"application/json; charset=utf-8"}},
+			body:   canned,
+		}, nil, nil
 	}
 	if !stream {
 		deadline = trace.start.Add(a.gateway.cfg.nonStreamTimeout)
 	}
+	// 单次解析共享：stream 补写 / 模型重定向 / 请求体卫生直接改写同一份
+	// payload，只在确有改动时重新序列化一次（原先各阶段各自反序列化，最坏三遍）。
+	changed := false
 	if stream {
-		body = ensureStream(body, payload)
+		changed = ensureStream(payload) || changed
 	}
+	injectCache := strings.HasSuffix(path, "/v1/chat/completions") && a.gateway.cfg.cacheFields
 	if a.gateway.cfg.project.modelMode != modelPassthrough {
 		modelContext, cancel := context.WithDeadline(r.Context(), deadline)
-		body = a.gateway.rewriteModel(modelContext, body)
+		changed = a.gateway.rewriteModelPayload(modelContext, payload) || changed
 		cancel()
 	}
-	// 请求体卫生（防 400 烧出口）+ prompt 缓存字段（仅 OpenAI 协议路径，
-	// 延长上游缓存 TTL）。
-	body = enhanceRequestBody(body, strings.HasSuffix(path, "/v1/chat/completions") && a.gateway.cfg.cacheFields)
+	changed = enhanceRequestBodyPayload(payload, injectCache) || changed
+	if changed {
+		if out, err := json.Marshal(payload); err == nil {
+			body = out
+		}
+	}
 	headers := a.collectHeaders(r.Header)
 	applyRequestIDs(headers, ids)
 	if strings.HasPrefix(path, "/v1/messages") {
@@ -488,19 +513,17 @@ func wantsStream(headers http.Header, payload map[string]any) bool {
 	return stream
 }
 
-func ensureStream(body []byte, payload map[string]any) []byte {
+// ensureStream 就地补 stream:true（客户端用 Accept 头声明流式但 body 未带时），
+// 返回是否有改动。
+func ensureStream(payload map[string]any) bool {
 	if payload == nil {
-		return body
+		return false
 	}
 	if stream, _ := payload["stream"].(bool); stream {
-		return body
+		return false
 	}
 	payload["stream"] = true
-	rewritten, err := json.Marshal(payload)
-	if err != nil {
-		return body
-	}
-	return rewritten
+	return true
 }
 
 func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace, response *gatewayResponse, err error, guard *sseGuard) {

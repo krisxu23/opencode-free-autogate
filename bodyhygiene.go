@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// localMocksEnabled 由 loadConfig 按 PROXY_LOCAL_MOCKS 设置（默认开）。
-var localMocksEnabled = true
-
 // enhanceRequestBody 请求体卫生 + prompt 缓存字段，一次解析完成：
 //
 // 卫生（防上游 400 白白烧掉一次出口尝试）：
@@ -27,10 +24,28 @@ var localMocksEnabled = true
 // 仅在确有改动时重新序列化；无改动原样返回，零额外成本。
 // injectCache 仅对 OpenAI 协议路径开启（Anthropic 原生体不接受这两个
 // 顶层字段），并受 PROXY_CACHE_FIELDS 开关控制。
+// enhanceRequestBody 是字节接口的薄包装（测试与外部调用用）；主链路在
+// handlePost 中直接操作已解析的 payload，避免重复反序列化。
 func enhanceRequestBody(body []byte, injectCache bool) []byte {
 	payload := parseJSONObject(body)
 	if payload == nil {
 		return body
+	}
+	if !enhanceRequestBodyPayload(payload, injectCache) {
+		return body
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// enhanceRequestBodyPayload 请求体卫生 + prompt 缓存字段，就地改写 payload，
+// 返回是否有改动。改动项与判定规则见 enhanceRequestBody 上方注释。
+func enhanceRequestBodyPayload(payload map[string]any, injectCache bool) bool {
+	if payload == nil {
+		return false
 	}
 	model, _ := payload["model"].(string)
 	changed := false
@@ -106,15 +121,7 @@ func enhanceRequestBody(body []byte, injectCache bool) []byte {
 			changed = true
 		}
 	}
-
-	if !changed {
-		return body
-	}
-	out, err := json.Marshal(payload)
-	if err != nil {
-		return body
-	}
-	return out
+	return changed
 }
 
 func hasFunctionName(item any) bool {
@@ -164,9 +171,9 @@ var housekeepingRe = regexp.MustCompile(`(?i)(quota|配额|usage check|额度检
 // tryLocalHousekeeping 本地应答代理管家流量（如客户端的配额探测）：
 // 这类请求不产生用户价值却烧真实免费配额。识别条件刻意保守——非流式、
 // max_tokens≤48、消息极短、命中特征词三者同时满足才拦截，宁可漏放不可
-// 误杀真实请求。每次拦截都有日志，PROXY_LOCAL_MOCKS=0 可整体关闭。
-func tryLocalHousekeeping(path string, stream bool, payload map[string]any) ([]byte, bool) {
-	if !localMocksEnabled || stream || !strings.HasSuffix(path, "/v1/chat/completions") {
+// 误杀真实请求。enabled 由 PROXY_LOCAL_MOCKS 控制（默认开），每次拦截都有日志。
+func tryLocalHousekeeping(enabled bool, path string, stream bool, payload map[string]any) ([]byte, bool) {
+	if !enabled || stream || !strings.HasSuffix(path, "/v1/chat/completions") {
 		return nil, false
 	}
 	mt := 0

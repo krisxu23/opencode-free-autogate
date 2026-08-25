@@ -154,13 +154,13 @@ func decodeShareCredential(userInfo string) (string, string, bool) {
 			continue
 		}
 		text := string(decoded)
-		if i := strings.Index(text, ":"); i > 0 {
-			return text[:i], text[i+1:], true
+		if user, pass, ok := strings.Cut(text, ":"); ok && user != "" {
+			return user, pass, true
 		}
 	}
 	// 非 base64：退回明文 user:pass。
-	if i := strings.Index(userInfo, ":"); i > 0 {
-		return userInfo[:i], userInfo[i+1:], true
+	if user, pass, ok := strings.Cut(userInfo, ":"); ok && user != "" {
+		return user, pass, true
 	}
 	return "", "", false
 }

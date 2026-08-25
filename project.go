@@ -6,7 +6,6 @@ type modelMode int
 
 const (
 	modelPassthrough modelMode = iota
-	modelKilo
 	modelOpenCode
 )
 
@@ -27,7 +26,6 @@ type projectSpec struct {
 	modelMode             modelMode
 	ownedBy               string
 	extraModels           []string
-	specialModels         map[string]string
 }
 
 func currentProject() projectSpec {
@@ -57,6 +55,9 @@ func currentProject() projectSpec {
 			"/v1/messages":         {},
 			"/v1/responses":        {},
 		},
+		// gatewayAuth=true 表示"设置了 GATEWAY_KEY 即启用 Bearer 认证"；
+		// 未设置该环境变量时网关保持无认证（仅本机监听的默认形态）。
+		gatewayAuth:           true,
 		upstreamAuthorization: "Bearer public",
 		defaultClientHeader:   "cli",
 		directFallback:        true,

@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"runtime"
-	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -25,7 +24,7 @@ type requestIDs struct {
 // 会话 ID 优先取客户端显式标识，否则用第一条用户消息生成稳定哈希，
 // 保证同一段多轮对话在历史增长时仍映射到同一个会话。
 func deriveRequestIDs(headers http.Header, body map[string]any) requestIDs {
-	signal := firstString(
+	signal := firstNonEmpty(
 		headers.Get("x-opencode-session"),
 		headers.Get("x-session-id"),
 		headers.Get("conversation-id"),
@@ -41,7 +40,7 @@ func deriveRequestIDs(headers http.Header, body map[string]any) requestIDs {
 	if signal == "" || signal == "{}" {
 		signal = randomID("fallback", 16)
 	}
-	projectSignal := firstString(headers.Get("x-opencode-project"), stringAt(body, "metadata", "project_id"))
+	projectSignal := firstNonEmpty(headers.Get("x-opencode-project"), stringAt(body, "metadata", "project_id"))
 	if projectSignal == "" {
 		projectSignal = "opencode-free-autogate:default-project"
 	}
@@ -85,15 +84,6 @@ func randomID(prefix string, size int) string {
 	return prefix + "_" + hex.EncodeToString(buf)
 }
 
-func firstString(values ...string) string {
-	for _, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func stringAt(value map[string]any, path ...string) string {
 	current := any(value)
 	for _, key := range path {
@@ -110,14 +100,23 @@ func stringAt(value map[string]any, path ...string) string {
 // fallbackOpencodeVersion 是 UA 同步失败时的兜底版本号。
 const fallbackOpencodeVersion = "1.18.18"
 
-var uaVersion atomic.Value // string：从 npm 同步的官方 CLI 最新版本
+var (
+	uaVersion atomic.Value // string：从 npm 同步的官方 CLI 最新版本
+	uaCached  atomic.Value // string：组装好的完整 UA，版本同步成功时刷新
+)
 
-func opencodeUserAgent() string {
-	version := fallbackOpencodeVersion
-	if v, ok := uaVersion.Load().(string); ok && v != "" {
-		version = v
-	}
+func buildUserAgent(version string) string {
 	return fmt.Sprintf("opencode/%s (%s %s; %s)", version, runtime.GOOS, runtime.GOARCH, runtime.Version())
+}
+
+// opencodeUserAgent 是每请求的热路径：组装结果缓存，避免重复 Sprintf。
+func opencodeUserAgent() string {
+	if ua, ok := uaCached.Load().(string); ok && ua != "" {
+		return ua
+	}
+	ua := buildUserAgent(fallbackOpencodeVersion)
+	uaCached.Store(ua)
+	return ua
 }
 
 // startUASync 每天从 npm registry 拉一次 opencode CLI 的最新版本号，
@@ -159,6 +158,7 @@ func syncUAOnce() {
 	}
 	if payload.Version != fallbackOpencodeVersion {
 		uaVersion.Store(payload.Version)
+		uaCached.Store(buildUserAgent(payload.Version))
 		log.Printf("[指纹] UA 版本已同步到 opencode/%s", payload.Version)
 	}
 }

@@ -24,10 +24,10 @@ import (
 )
 
 var (
-	errAttemptTimeout   = errors.New("代理首字节超时")
-	errRequestTimeout   = errors.New("请求总超时")
-	errNoProxy          = errors.New("没有可用代理")
-	errStreamTruncated  = errors.New("上游流在首个数据块前中断")
+	errAttemptTimeout  = errors.New("代理首字节超时")
+	errRequestTimeout  = errors.New("请求总超时")
+	errNoProxy         = errors.New("没有可用代理")
+	errStreamTruncated = errors.New("上游流在首个数据块前中断")
 )
 
 const maxUpstreamBody = 64 << 20
@@ -78,7 +78,10 @@ func (g *gateway) stickyRemember(session, addr string) {
 		g.sticky = make(map[string]stickyEntry)
 	}
 	now := time.Now()
-	if len(g.sticky) > 1024 {
+	// 超限时立即清理；未超限也每 256 次插入强制清一轮——只靠超限触发的话，
+	// 持续涌入的新会话会让过期项永远等不到 len 回落，map 随请求量增长。
+	g.stickyWrites++
+	if len(g.sticky) > 1024 || g.stickyWrites%256 == 0 {
 		for key, entry := range g.sticky {
 			if now.Sub(entry.seen) > stickyTTL {
 				delete(g.sticky, key)
@@ -142,10 +145,11 @@ type gateway struct {
 
 	exits *exitTracker // 出口近期表现记账：评分排序 + 坐板凳
 
-	stickyMu    sync.Mutex
-	sticky      map[string]stickyEntry // 会话 → 上次胜出出口（prompt 缓存友好）
-	calibrated  atomic.Value           // *modelCatalog：models.dev 校准的免费模型清单
-	deepRunning atomic.Bool            // 深检轮重叠保护
+	stickyMu     sync.Mutex
+	sticky       map[string]stickyEntry // 会话 → 上次胜出出口（prompt 缓存友好）
+	stickyWrites int                    // 插入计数：周期性强制清理过期项（见 stickyRemember）
+	calibrated   atomic.Value           // *modelCatalog：models.dev 校准的免费模型清单
+	deepRunning  atomic.Bool            // 深检轮重叠保护
 
 	lastStatus     atomic.Int32 // 最近一次请求的最终状态码，供界面健康色
 	lastTruncation atomic.Int64 // 最近一次流截断时刻（UnixNano），供界面健康色
@@ -650,15 +654,6 @@ func (g *gateway) probeBody() []byte {
 	return body
 }
 
-func sortedMapKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 // probe 是常态探活：GET /v1/models，零模型配额，验证"网络路径通不通"。
 // 额度门由每小时一轮的 chat 深检负责（startDeepProber）——两层各司其职，
 // 避免每轮探活都烧真实对话配额。
@@ -1021,10 +1016,10 @@ func openHTTP(ctx context.Context, method, target string, headers http.Header, b
 	return &liveResponse{response: res, cancel: cancel, headerAt: time.Now()}, nil
 }
 
-func requestTransport(proxyURL *url.URL) *http.Transport {
+func requestTransport(proxyURL *url.URL, dialTimeout time.Duration, tlsInsecure bool) *http.Transport {
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
-			Timeout:   transportDialTimeout,
+			Timeout:   dialTimeout,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		ForceAttemptHTTP2:      false,
@@ -1032,19 +1027,26 @@ func requestTransport(proxyURL *url.URL) *http.Transport {
 		MaxIdleConns:           128,
 		MaxIdleConnsPerHost:    4,
 		IdleConnTimeout:        90 * time.Second,
-		TLSHandshakeTimeout:    transportDialTimeout,
+		TLSHandshakeTimeout:    dialTimeout,
 		ExpectContinueTimeout:  time.Second,
 		MaxResponseHeaderBytes: 1 << 20,
 		TLSClientConfig: &tls.Config{
-			MinVersion:         tls.VersionTLS12,
+			MinVersion: tls.VersionTLS12,
 			// INSECURE_TLS=1 时放行非标证书（自签镜像/代理环境），默认严格校验。
-			InsecureSkipVerify: upstreamTLSInsecure,
+			InsecureSkipVerify: tlsInsecure,
 		},
 	}
 	if proxyURL != nil {
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 	return transport
+}
+
+// rotateToTail 把 items[i] 原地挪到队尾并保持其余元素的相对顺序。
+func rotateToTail[T any](items []T, i int) []T {
+	item := items[i]
+	items = append(items, item)
+	return append(items[:i], items[i+1:]...)
 }
 
 func boundedWait(deadline time.Time, maximum time.Duration) time.Duration {
@@ -1495,8 +1497,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 		for count > 0 && launchedExits+skipped < len(exits) {
 			candidate := exits[launchedExits]
 			if g.exits.softLimited(candidate.addr) && g.exits.inFlightCount(candidate.addr) > 0 && skipped < len(exits)-launchedExits {
-				exits = append(exits, candidate)
-				exits = append(exits[:launchedExits], exits[launchedExits+1:]...)
+				exits = rotateToTail(exits, launchedExits)
 				skipped++
 				continue
 			}
@@ -1627,7 +1628,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 					res.addr, trace.upstream,
 					res.elapsed.Round(time.Millisecond),
 					res.headerElapsed.Round(time.Millisecond),
-					(res.elapsed-res.headerElapsed).Round(time.Millisecond))
+					(res.elapsed - res.headerElapsed).Round(time.Millisecond))
 			} else {
 				log.Printf("[竞速] 胜出: %s (%s)", res.addr, res.elapsed.Round(time.Millisecond))
 			}
@@ -1714,7 +1715,11 @@ func (g *gateway) performRelay(ctx context.Context, request upstreamRequest) (*g
 	if err != nil {
 		return nil, err
 	}
-	target := strings.TrimRight(requestUpstream(g.cfg.project.upstream, request), "/") + request.path
+	upstream := request.upstream
+	if upstream == "" {
+		upstream = g.cfg.project.upstream
+	}
+	target := strings.TrimRight(upstream, "/") + request.path
 	query := relay.Query()
 	query.Set("api_key", g.cfg.zenKey)
 	query.Set("url", target)
@@ -1740,6 +1745,14 @@ func (g *gateway) performRelay(ctx context.Context, request upstreamRequest) (*g
 	status := live.response.StatusCode
 	header := cloneEndToEndHeaders(live.response.Header)
 	if request.stream && status < 400 {
+		// 与代理层同一道胜利者验证门：等到首个真实 SSE 数据行才交付，
+		// 中继返回 200 空流时同样拦下重试，客户端不会收到无内容响应。
+		prefix, err := validateStreamHead(ctx, live, request.deadline)
+		if err != nil {
+			live.Close()
+			return nil, err
+		}
+		live.response.Body = &prefixedBody{prefix: prefix, src: live.response.Body}
 		return &gatewayResponse{status: status, header: header, live: live}, nil
 	}
 	body, err := live.readAll(request.deadline)

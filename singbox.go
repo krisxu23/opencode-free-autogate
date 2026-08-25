@@ -144,7 +144,7 @@ func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string)
 		return // 没有新增，无需重建
 	}
 	if len(all) > maxAdvancedNodes {
-		all = sampleStrings(all, maxAdvancedNodes)
+		all = sampleEvenly(all, maxAdvancedNodes)
 		// advSeen 只登记真正进入桥接的链接：被抽样丢掉的保留「未知」身份，
 		// 否则它们会被当成已处理而永远没有机会入选。
 		seenSet = make(map[string]struct{}, len(all))
@@ -241,18 +241,6 @@ func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string)
 		}
 		log.Printf("[高级] 探活通过 %d/%d", added, len(autoSlots))
 	}
-}
-
-func sampleStrings(items []string, limit int) []string {
-	if len(items) <= limit {
-		return items
-	}
-	out := make([]string, 0, limit)
-	step := float64(len(items)) / float64(limit)
-	for i := 0; i < limit; i++ {
-		out = append(out, items[int(float64(i)*step)])
-	}
-	return out
 }
 
 // advancedOutboundJSON 按协议生成 sing-box 出站配置片段。

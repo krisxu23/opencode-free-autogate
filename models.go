@@ -44,7 +44,7 @@ func (g *gateway) modelMaps(ctx context.Context) (map[string]string, map[string]
 			return cloneStringMap(g.modelCache.rename), cloneStringMap(g.modelCache.redirect)
 		}
 		log.Printf("[模型] 刷新失败且无缓存: %v", err)
-		rename = cloneStringMap(g.cfg.project.specialModels)
+		rename = map[string]string{}
 		redirect := buildRedirect(rename)
 		// 短暂缓存失败结果，避免上游故障时并发请求在互斥锁后逐个等待 8 秒。
 		g.modelCache = &cachedModels{
@@ -113,20 +113,13 @@ func (g *gateway) fetchModelMapsFrom(parent context.Context, base string) (map[s
 		return nil, err
 	}
 
-	rename := cloneStringMap(g.cfg.project.specialModels)
+	rename := map[string]string{}
 	for _, id := range ids {
-		switch g.cfg.project.modelMode {
-		case modelKilo:
-			if !strings.HasSuffix(id, ":free") {
-				continue
-			}
-			trimmed := strings.TrimSuffix(id, ":free")
-			parts := strings.Split(trimmed, "/")
-			rename[id] = parts[len(parts)-1]
-		case modelOpenCode:
-			if strings.HasSuffix(id, "-free") {
-				rename[id] = strings.TrimSuffix(id, "-free")
-			}
+		if g.cfg.project.modelMode != modelOpenCode {
+			continue
+		}
+		if strings.HasSuffix(id, "-free") {
+			rename[id] = strings.TrimSuffix(id, "-free")
 		}
 	}
 	return rename, nil
@@ -217,24 +210,19 @@ func (g *gateway) modelsResponse(ctx context.Context) *gatewayResponse {
 	}
 }
 
-func (g *gateway) rewriteModel(ctx context.Context, body []byte) []byte {
-	_, redirect := g.modelMaps(ctx)
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return body
+func (g *gateway) rewriteModelPayload(ctx context.Context, payload map[string]any) bool {
+	if payload == nil {
+		return false
 	}
+	_, redirect := g.modelMaps(ctx)
 	model, _ := payload["model"].(string)
 	upstream, exists := redirect[model]
 	if !exists {
-		return body
+		return false
 	}
 	payload["model"] = upstream
-	rewritten, err := json.Marshal(payload)
-	if err != nil {
-		return body
-	}
 	log.Printf("[模型重定向] %s -> %s", model, upstream)
-	return rewritten
+	return true
 }
 
 func cloneStringMap(source map[string]string) map[string]string {

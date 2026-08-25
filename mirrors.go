@@ -146,11 +146,3 @@ func shortUpstream(base string) string {
 	}
 	return parsed.Host
 }
-
-// requestUpstream 返回该请求实际使用的上游基址，空值时回落到项目默认上游。
-func requestUpstream(fallback string, request upstreamRequest) string {
-	if request.upstream != "" {
-		return request.upstream
-	}
-	return fallback
-}

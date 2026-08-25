@@ -16,6 +16,23 @@ const (
 	outboundDirect = "direct"
 )
 
+// configManagedEnvKeys 是由 config.json 派生的环境变量：「保存并重启」时必须
+// 剔除它们，否则旧值会在新进程里覆盖新配置（曾导致节点源改了却不生效）。
+// applyEnv 的写入与此处一一对应，新增配置项时两处同步维护。
+var configManagedEnvKeys = []string{
+	"PORT",
+	"PROXY_ORDER",
+	"CUSTOM_PROXIES",
+	"MIRROR_URLS",
+	"PROXY_FIRST_BYTE_TIMEOUT",
+	"HARD_TIMEOUT",
+	"PROXY_DEEP_PROBE_INTERVAL",
+	"PROXY_PROBE_MODEL",
+	"PROXY_LIST_URLS",
+	"PROXY_RACE",
+	"PROXY_RACE_WIDTH",
+}
+
 // uiSettings 是界面可编辑的配置，持久化在 exe 同目录的 config.json。
 type uiSettings struct {
 	Port             int      `json:"port"`
@@ -109,16 +126,16 @@ func (s uiSettings) normalized() uiSettings {
 	// 深检模型只做去空白；允许填任意 ID（上游临时下架时由校准哨兵告警）。
 	s.ProbeModel = strings.TrimSpace(s.ProbeModel)
 	// PoolInput 允许为空：节点池源完全由用户填写（公共推荐源见 README）。
-	if len(s.Proxies) == 0 && strings.TrimSpace(s.ProxyInput) != "" {
-		s.Proxies, _ = ParseProxyInput(s.ProxyInput)
-	}
-	if s.ProxyInput == "" && len(s.Proxies) > 0 {
+	// ProxyInput/MirrorInput 是唯一真相源：输入框内容非空时以解析结果为准，
+	// 数组字段仅用于回填空缺的输入框（兼容手改 config.json 只写数组的旧习惯）。
+	if input := strings.TrimSpace(s.ProxyInput); input != "" {
+		s.Proxies, _ = ParseProxyInput(input)
+	} else if len(s.Proxies) > 0 {
 		s.ProxyInput = strings.Join(s.Proxies, "\r\n")
 	}
-	if len(s.Mirrors) == 0 && strings.TrimSpace(s.MirrorInput) != "" {
-		s.Mirrors, _ = parseMirrorList(s.MirrorInput)
-	}
-	if s.MirrorInput == "" && len(s.Mirrors) > 0 {
+	if input := strings.TrimSpace(s.MirrorInput); input != "" {
+		s.Mirrors, _ = parseMirrorList(input)
+	} else if len(s.Mirrors) > 0 {
 		s.MirrorInput = strings.Join(s.Mirrors, "\r\n")
 	}
 	return s
