@@ -35,6 +35,8 @@ type config struct {
 	gatewayKey           string
 	firstByteTimeout     time.Duration
 	hardTimeout          time.Duration
+	absorbStreaming      bool // 吸收模式：流式请求网关内重试直到完整
+	absorbAttempts       int  // 吸收模式最大尝试次数
 	nonStreamTimeout     time.Duration
 	probeTimeout         time.Duration
 	probeChatTimeout     time.Duration // 迷你真实请求探活的超时：chat 首字节含上游排队，需远大于 GET 探活
@@ -89,6 +91,8 @@ func loadConfig(project projectSpec) config {
 		gatewayKey:           os.Getenv("GATEWAY_KEY"),
 		firstByteTimeout:     firstByte,
 		hardTimeout:          envMilliseconds("HARD_TIMEOUT", 180000),
+		absorbStreaming:      envBool("PROXY_ABSORB_STREAMING", false),
+		absorbAttempts:       envInt("PROXY_ABSORB_ATTEMPTS", 10),
 		nonStreamTimeout:     envMilliseconds("NON_STREAM_TIMEOUT", 300000),
 		probeTimeout:         envMilliseconds("PROXY_PROBE_TIMEOUT", 8000),
 		probeChatTimeout:     envMilliseconds("PROXY_PROBE_CHAT_TIMEOUT", 25000),
@@ -226,6 +230,21 @@ func envMilliseconds(key string, fallback int) time.Duration {
 		n = fallback
 	}
 	return time.Duration(n) * time.Millisecond
+}
+
+func envBool(key string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	log.Printf("[配置] %s=%q 无效，使用默认值 %v", key, value, fallback)
+	return fallback
 }
 
 func nonNegative(value int) int {

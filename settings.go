@@ -26,6 +26,8 @@ var configManagedEnvKeys = []string{
 	"MIRROR_URLS",
 	"PROXY_FIRST_BYTE_TIMEOUT",
 	"HARD_TIMEOUT",
+	"PROXY_ABSORB_STREAMING",
+	"PROXY_ABSORB_ATTEMPTS",
 	"PROXY_DEEP_PROBE_INTERVAL",
 	"PROXY_PROBE_MODEL",
 	"PROXY_LIST_URLS",
@@ -43,6 +45,8 @@ type uiSettings struct {
 	MirrorInput      string   `json:"mirror_input"`       // 用户原始输入，回填输入框
 	FirstByteSeconds int      `json:"first_byte_seconds"` // 流式首字节超时，秒
 	BudgetSeconds    int      `json:"budget_seconds"`     // 流式总预算，秒
+	AbsorbStreaming  bool     `json:"absorb_streaming"`   // 吸收模式：网关内重试直到完整
+	AbsorbAttempts   int      `json:"absorb_attempts"`    // 吸收模式最大尝试次数
 	DeepProbeMinutes int      `json:"deep_probe_minutes"` // chat 深检间隔，分钟
 	ProbeModel       string   `json:"probe_model"`        // chat 深检模型；空 = 自动（big-pickle）
 	GatewayKey       string   `json:"gateway_key"`        // 展示用的默认 Key
@@ -110,6 +114,9 @@ func (s uiSettings) normalized() uiSettings {
 	if s.BudgetSeconds < s.FirstByteSeconds {
 		s.BudgetSeconds = s.FirstByteSeconds
 	}
+	if s.AbsorbAttempts <= 0 || s.AbsorbAttempts > 50 {
+		s.AbsorbAttempts = 10
+	}
 	// 深检间隔下限与 deepprobe 内部护栏一致（10 分钟），上限一天。
 	if s.DeepProbeMinutes <= 0 {
 		s.DeepProbeMinutes = 60
@@ -172,6 +179,8 @@ func (s uiSettings) applyEnv() {
 	}
 	setIfEmpty("PROXY_FIRST_BYTE_TIMEOUT", fmt.Sprintf("%d", s.FirstByteSeconds*1000))
 	setIfEmpty("HARD_TIMEOUT", fmt.Sprintf("%d", s.BudgetSeconds*1000))
+	setIfEmpty("PROXY_ABSORB_STREAMING", fmt.Sprintf("%v", s.AbsorbStreaming))
+	setIfEmpty("PROXY_ABSORB_ATTEMPTS", fmt.Sprintf("%d", s.AbsorbAttempts))
 	setIfEmpty("PROXY_DEEP_PROBE_INTERVAL", fmt.Sprintf("%d", s.DeepProbeMinutes*60000))
 	if s.ProbeModel != "" {
 		setIfEmpty("PROXY_PROBE_MODEL", s.ProbeModel)

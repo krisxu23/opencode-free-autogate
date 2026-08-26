@@ -341,7 +341,13 @@ func (a *app) handlePost(w http.ResponseWriter, r *http.Request, path string, de
 	if stream {
 		guard = newSseGuard(w)
 	}
-	response, err := a.gateway.dispatch(r.Context(), request, trace)
+	var response *gatewayResponse
+	if stream && a.gateway.cfg.absorbStreaming {
+		// 吸收模式：保活心跳由 sseGuard 负责，这里在网关内重试直到完整。
+		response, err = a.gateway.dispatchAbsorb(r.Context(), request, trace)
+	} else {
+		response, err = a.gateway.dispatch(r.Context(), request, trace)
+	}
 	if guard != nil {
 		guard.Finish()
 	}
@@ -427,6 +433,17 @@ func (g *sseGuard) Committed() bool {
 // writeCommittedStream 处理已提前提交 SSE 头的响应：赢家的流直接透传；
 // 其余情形（错误或非流式兜底）转为 SSE 错误事件，让客户端拿到明确原因。
 func writeCommittedStream(w http.ResponseWriter, r *http.Request, response *gatewayResponse, streamIdle time.Duration, observe func(truncated bool)) {
+	if response.live == nil && response.status >= 200 && response.status < 300 && len(response.body) > 0 {
+		// 吸收模式的成品：已验证完整的整段 SSE 原文一次性交付。
+		_, _ = w.Write(response.body)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if observe != nil {
+			observe(false)
+		}
+		return
+	}
 	if response.live != nil {
 		streamResponse(w, r.Context(), response.live, streamIdle, observe)
 		return

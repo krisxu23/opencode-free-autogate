@@ -57,6 +57,8 @@ type gatewayUI struct {
 	keyEdit       *walk.LineEdit
 	firstByte     *walk.NumberEdit
 	budget        *walk.NumberEdit
+	absorbCheck   *walk.CheckBox   // 吸收模式开关
+	absorbAttempt *walk.NumberEdit // 吸收模式最大尝试次数
 	deepProbe     *walk.NumberEdit
 	probeModelBox *walk.ComboBox
 	outboundBox   *walk.ComboBox
@@ -200,6 +202,16 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 											dcl.Label{Text: "秒     深检间隔"},
 											dcl.NumberEdit{AssignTo: &ui.deepProbe, Value: float64(settings.DeepProbeMinutes), MinValue: 10, MaxValue: 1440, Decimals: 0, MaxSize: dcl.Size{Width: 70}},
 											dcl.Label{Text: "分"},
+										},
+									},
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.CheckBox{AssignTo: &ui.absorbCheck, Text: "吸收重试（上游截断/失败时网关内自动换道重试，DSH 只见等待）", Checked: settings.AbsorbStreaming},
+											dcl.Label{Text: "最多"},
+											dcl.NumberEdit{AssignTo: &ui.absorbAttempt, Value: float64(settings.AbsorbAttempts), MinValue: 1, MaxValue: 50, Decimals: 0, MaxSize: dcl.Size{Width: 60}},
+											dcl.Label{Text: "次（总预算 10 分钟）"},
+											dcl.HSpacer{},
 										},
 									},
 									dcl.Composite{
@@ -513,6 +525,8 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 	}
 	next.FirstByteSeconds = int(ui.firstByte.Value())
 	next.BudgetSeconds = int(ui.budget.Value())
+	next.AbsorbStreaming = ui.absorbCheck.Checked()
+	next.AbsorbAttempts = int(ui.absorbAttempt.Value())
 	next.DeepProbeMinutes = int(ui.deepProbe.Value())
 	next.ProbeModel = strings.TrimSpace(ui.probeModelBox.Text())
 	next.ProxyInput = ui.proxyEdit.Text()
