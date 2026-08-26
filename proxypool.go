@@ -16,7 +16,6 @@ import (
 
 const (
 	poolFetchTimeout  = 20 * time.Second // 单个节点源链接的拉取超时
-	poolProbeWorkers  = 32               // 并发探活协程数
 	poolMaxCandidates = 400              // 每轮最多探活的新候选数
 	poolMaxAutoSlots  = 300              // 自动入池的节点上限
 	poolRetryBackoff  = 30 * time.Minute // 探活失败节点的重试间隔
@@ -114,7 +113,8 @@ func probeSlots(ctx context.Context, g *gateway, items []slot) []poolProbeResult
 	if len(items) == 0 {
 		return results
 	}
-	sem := make(chan struct{}, poolProbeWorkers)
+	// 并发路数与 chat 深检共用同一设置（「检测并发」，默认 32 路）。
+	sem := make(chan struct{}, g.probeConcurrency())
 	var wg sync.WaitGroup
 	for i, item := range items {
 		item := item

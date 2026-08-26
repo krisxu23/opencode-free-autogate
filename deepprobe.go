@@ -20,7 +20,7 @@ import (
 //
 // 启动后槽位一就绪立刻跑首轮深检（用户第一句话之前假健康节点已被筛掉），
 // 之后按间隔 ±20% 抖动进入常规节奏。其余纪律：
-//   - 并发受深检并发封顶（默认 32 路，可配置），既并行又不至于同一瞬间
+//   - 并发受「检测并发」封顶（默认 32 路，初检/复检共用，可配置），既并行又不至于同一瞬间
 //     几十个 IP 一起戳上游；
 //   - 打乱顺序，避免按固定次序形成可预测模式；
 //   - 重叠保护：上一轮没跑完就跳过本轮；
@@ -68,12 +68,13 @@ func (g *gateway) waitForCandidates(ctx context.Context) bool {
 	return false
 }
 
-// deepConcurrency 是深检的并发封顶：幸存者按 N 路并行分波消化，
-// 全轮耗时 ≈ ⌈候选数/并发路数⌉ × 单次对话耗时，而不是串行累加。
-// 可经界面「深检并发」或环境变量 PROXY_DEEP_CONCURRENCY 调整（默认 32，
-// 上限 128——再高容易同一瞬间集中触发上游风控）。
-func (g *gateway) deepConcurrency() int {
-	n := g.cfg.deepConcurrency
+// probeConcurrency 是检测并发的统一封顶：GET 初检与 chat 深检/复检共用
+// 同一设置，候选按 N 路并行分波消化，全轮耗时 ≈ ⌈候选数/并发路数⌉ ×
+// 单次耗时，而不是串行累加。可经界面「检测并发」或环境变量
+// PROXY_PROBE_CONCURRENCY 调整（默认 32，上限 128——再高容易同一瞬间
+// 集中触发上游风控）。
+func (g *gateway) probeConcurrency() int {
+	n := g.cfg.probeConcurrency
 	if n <= 0 {
 		n = 32
 	}
@@ -113,7 +114,7 @@ func (g *gateway) runDeepProbePass(ctx context.Context) {
 	alive, dead := 0, 0
 	work := make(chan slot)
 	var wg sync.WaitGroup
-	for worker := 0; worker < g.deepConcurrency(); worker++ {
+	for worker := 0; worker < g.probeConcurrency(); worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

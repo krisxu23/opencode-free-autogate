@@ -48,7 +48,7 @@ type config struct {
 	stickyEnabled        bool          // 会话粘性：同会话优先复用上次胜出的出口（prompt 缓存友好）
 	localMocks           bool          // 本地拦截代理管家流量（配额检查等），零上游消耗
 	deepProbeInterval    time.Duration // chat 深检间隔：识别"网络通但额度枯竭"的假健康节点
-	deepConcurrency      int           // chat 深检并发路数（默认 32，上限 128）
+	probeConcurrency     int           // 检测并发路数：GET 初检与 chat 深检/复检共用（默认 32，上限 128）
 	probeModel           string        // 深检固定模型：big-pickle 长期在售，其他名字会下线
 	cacheFields          bool          // 注入 prompt 缓存字段（延长上游提示缓存 TTL）
 	bodyFingerprint      bool          // 统一出站请求体顶层键序（对齐原生 CLI 指纹）
@@ -108,7 +108,7 @@ func loadConfig(project projectSpec) config {
 		stickyEnabled:        envDefaultOn("PROXY_STICKY"),
 		localMocks:           envDefaultOn("PROXY_LOCAL_MOCKS"),
 		deepProbeInterval:    envMilliseconds("PROXY_DEEP_PROBE_INTERVAL", 3600000),
-		deepConcurrency:      envInt("PROXY_DEEP_CONCURRENCY", 32),
+		probeConcurrency:     envInt("PROXY_PROBE_CONCURRENCY", 32),
 		probeModel:           envString("PROXY_PROBE_MODEL", "big-pickle"),
 		cacheFields:          envDefaultOn("PROXY_CACHE_FIELDS"),
 		bodyFingerprint:      envDefaultOn("PROXY_BODY_FINGERPRINT"),

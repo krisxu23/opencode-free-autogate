@@ -65,7 +65,7 @@ type gatewayUI struct {
 	absorbCheck   *walk.CheckBox   // 吸收模式开关
 	absorbAttempt *walk.NumberEdit // 吸收模式最大尝试次数
 	deepProbe     *walk.NumberEdit
-	deepConc      *walk.NumberEdit // chat 深检并发路数
+	probeConc     *walk.NumberEdit // 检测并发路数（初检/深检共用）
 	probeModelBox *walk.ComboBox
 	outboundBox   *walk.ComboBox
 	logCursor     int
@@ -218,9 +218,9 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 											dcl.NumberEdit{AssignTo: &ui.budget, Value: float64(settings.BudgetSeconds), MinValue: 5, MaxValue: 1800, Decimals: 0, MaxSize: dcl.Size{Width: 80}},
 											dcl.Label{Text: "秒     深检间隔"},
 											dcl.NumberEdit{AssignTo: &ui.deepProbe, Value: float64(settings.DeepProbeMinutes), MinValue: 10, MaxValue: 1440, Decimals: 0, MaxSize: dcl.Size{Width: 70}},
-											dcl.Label{Text: "分     深检并发"},
-											dcl.NumberEdit{AssignTo: &ui.deepConc, Value: float64(settings.DeepConcurrency), MinValue: 1, MaxValue: 128, Decimals: 0, MaxSize: dcl.Size{Width: 60}},
-											dcl.Label{Text: "路（节点多可调高）"},
+											dcl.Label{Text: "分     检测并发"},
+											dcl.NumberEdit{AssignTo: &ui.probeConc, Value: float64(settings.ProbeConcurrency), MinValue: 1, MaxValue: 128, Decimals: 0, MaxSize: dcl.Size{Width: 60}},
+											dcl.Label{Text: "路（初检/复检共用，节点多可调高）"},
 										},
 									},
 									dcl.Composite{
@@ -667,7 +667,7 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 	next.AbsorbStreaming = ui.absorbCheck.Checked()
 	next.AbsorbAttempts = int(ui.absorbAttempt.Value())
 	next.DeepProbeMinutes = int(ui.deepProbe.Value())
-	next.DeepConcurrency = int(ui.deepConc.Value())
+	next.ProbeConcurrency = int(ui.probeConc.Value())
 	next.ProbeModel = strings.TrimSpace(ui.probeModelBox.Text())
 	next.ProxyInput = ui.proxyEdit.Text()
 	next.MirrorInput = ui.mirrorEdit.Text()
@@ -702,7 +702,7 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 		report.WriteString("并行竞速：关闭\r\n")
 	}
 	fmt.Fprintf(&report, "深检间隔：%d 分钟\r\n", next.DeepProbeMinutes)
-	fmt.Fprintf(&report, "深检并发：%d 路\r\n", next.DeepConcurrency)
+	fmt.Fprintf(&report, "检测并发：%d 路（初检/复检共用）\r\n", next.ProbeConcurrency)
 	if next.ProbeModel != "" {
 		fmt.Fprintf(&report, "深检模型：%s\r\n", next.ProbeModel)
 	} else {
