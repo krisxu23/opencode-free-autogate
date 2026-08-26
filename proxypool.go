@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -105,16 +107,20 @@ type poolProbeResult struct {
 	ok      bool
 }
 
-// probeSlots 并发对候选节点做真实上游探活（经代理访问 opencode.ai）。
-func probeSlots(ctx context.Context, g *gateway, items []slot) []poolProbeResult {
-	results := make([]poolProbeResult, len(items))
-	if len(items) == 0 {
-		return results
+// forEachProbeResult 以 limit 路并发探测 items；每个候选一完成就立即回调
+// onResult，绝不攒批——这是初检与复检两条流水线同步运转的基石：
+// 第一波里通过的那个节点，此刻已经进入内部候选池并排队深检。
+func forEachProbeResult(ctx context.Context, limit int, items []slot,
+	probe func(context.Context, slot) bool, onResult func(poolProbeResult)) {
+	if len(items) == 0 || limit <= 0 {
+		return
 	}
-	// 并发路数与 chat 深检共用同一设置（「检测并发」，默认 32 路）。
-	sem := make(chan struct{}, g.probeConcurrency())
+	if limit > 128 {
+		limit = 128
+	}
+	sem := make(chan struct{}, limit)
 	var wg sync.WaitGroup
-	for i, item := range items {
+	for _, item := range items {
 		item := item
 		wg.Add(1)
 		go func() {
@@ -129,12 +135,11 @@ func probeSlots(ctx context.Context, g *gateway, items []slot) []poolProbeResult
 				return
 			}
 			started := time.Now()
-			ok := g.probe(ctx, item)
-			results[i] = poolProbeResult{slot: item, latency: time.Since(started), ok: ok}
+			ok := probe(ctx, item)
+			onResult(poolProbeResult{slot: item, latency: time.Since(started), ok: ok})
 		}()
 	}
 	wg.Wait()
-	return results
 }
 
 // startPoolWatcher 初检主循环：连轴转，无轮间间隔——测完本轮立即重拉源
@@ -201,48 +206,52 @@ func (g *gateway) refreshPool(ctx context.Context) bool {
 	}
 	plainNew := len(fresh)
 	fresh = append(fresh, advAuto...)
+	// 合并后整体洗牌：死代理要等满超时才算失败，若按源顺序排死一批压在
+	// 队头，好节点会被拖到几分钟之后才轮到。洗牌让高质量节点均匀混入
+	// 每一波，首批转正时间从"分钟级尾巴"提前到"第一波"。
+	rand.Shuffle(len(fresh), func(i, j int) { fresh[i], fresh[j] = fresh[j], fresh[i] })
 	skipped := len(candidates) - plainNew
 	if len(fresh) > 0 {
 		log.Printf("[初检] 本轮待测候选 %d 个（普通 %d / 高级映射 %d），%d 路并发逐个检测；失败冷却跳过 %d",
 			len(fresh), plainNew, len(advAuto), g.probeConcurrency(), skipped)
 	}
 
-	passed, failed := 0, 0
-	for _, result := range probeSlots(ctx, g, fresh) {
+	// 流式初检：每个候选完成瞬间即结算——失败记冷却，通过立刻进内部
+	// 候选池并入队复检；其余 31 路继续滚动，两轮流水线真正同步。
+	passed, failed := atomic.Int64{}, atomic.Int64{}
+	onResult := func(result poolProbeResult) {
 		if result.slot.addr == "" {
-			continue
+			return
 		}
 		if !result.ok {
 			g.noteFailed(result.slot.addr)
-			failed++
-			continue
+			failed.Add(1)
+			return
 		}
-		passed++
+		passed.Add(1)
 		isAdv := strings.HasPrefix(result.slot.addr, "127.0.0.1:")
-		// 初检只发内部过关池资格：不参与竞速、界面不显示，
-		// 等流式复检通过后才转正为正式出口。
 		g.addFresh(result.slot)
 		tag := "[池+]"
 		if isAdv {
 			tag = "[高级+]"
 		}
 		log.Printf("%s %s (%dms)", tag, result.slot.addr, result.latency.Milliseconds())
-		// 流式复检：初检一通过立即入队深检，不等整轮结束；
-		// 队列打满则丢弃，该节点随后的小时级整体复检仍会覆盖。
 		select {
 		case g.deepQueue <- result.slot:
-		default:
+		default: // 队列满：交给周期性整体复检兜底
 		}
 	}
+	forEachProbeResult(ctx, g.probeConcurrency(), fresh,
+		func(c context.Context, s slot) bool { return g.probe(c, s) }, onResult)
 	if len(fresh) > 0 {
-		log.Printf("[初检] 本轮完毕：通过 %d / 失败 %d（通过者已进入复检流水线）", passed, failed)
+		log.Printf("[初检] 本轮完毕：通过 %d / 失败 %d（通过者已实时流入复检流水线）", passed.Load(), failed.Load())
 	}
 
 	// 剪除失效节点的职责已移交复检：深检连不通即淘汰/移出（见 settleDeep），
 	// 初检循环不再每轮对存量正式节点做 GET 复剪。
 
 	log.Printf("[池] 本轮汇总：源 %d | 候选 %d（普通 %d / 高级映射 %d）| 初检通过 %d / 失败 %d | 待复检 %d | 正式池 %d",
-		len(urls), len(candidates)+len(advAuto), plainNew, len(advAuto), passed, failed, g.freshCount(), g.customCount())
+		len(urls), len(candidates)+len(advAuto), plainNew, len(advAuto), passed.Load(), failed.Load(), g.freshCount(), g.customCount())
 	return len(fresh) > 0
 }
 
