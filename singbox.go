@@ -224,15 +224,12 @@ func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string)
 		log.Printf("[高级] 节点更新：%d 个高级节点在线（新增候选 %d）", len(newBridge.Mapping), len(freshLinks))
 	}
 
-	// 池来源节点走探活门禁，健康才入池。
+	// 池来源节点走探活门禁，健康才入池（无数量上限，节奏由「检测并发」控制）。
 	if len(autoSlots) > 0 {
 		added := 0
 		for _, result := range probeSlots(ctx, g, autoSlots) {
 			if result.slot.addr == "" || !result.ok {
 				continue
-			}
-			if g.customCount() >= poolMaxAutoSlots {
-				break
 			}
 			if g.addSlot(result.slot, true) {
 				added++

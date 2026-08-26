@@ -15,10 +15,8 @@ import (
 )
 
 const (
-	poolFetchTimeout  = 20 * time.Second // 单个节点源链接的拉取超时
-	poolMaxCandidates = 400              // 每轮最多探活的新候选数
-	poolMaxAutoSlots  = 300              // 自动入池的节点上限
-	poolRetryBackoff  = 30 * time.Minute // 探活失败节点的重试间隔
+	poolFetchTimeout = 20 * time.Second // 单个节点源链接的拉取超时
+	poolRetryBackoff = 30 * time.Minute // 探活失败节点的重试间隔
 )
 
 // parsePoolSources 把多行/逗号分隔的节点源链接整理为去重后的 URL 列表。
@@ -186,7 +184,9 @@ func (g *gateway) refreshPool(ctx context.Context) {
 		g.ensureAdvancedBridge(ctx, freshAdv)
 	}
 
-	var fresh []slot
+	// 测试多少完全由用户的源列表决定：新候选全量进探活队列，
+	// 并发节奏由「检测并发」信号量控制，这里不再设抽样上限。
+	fresh := make([]slot, 0, len(candidates))
 	for _, s := range candidates {
 		if _, dup := existing[s.addr]; dup {
 			continue
@@ -195,9 +195,6 @@ func (g *gateway) refreshPool(ctx context.Context) {
 			continue
 		}
 		fresh = append(fresh, s)
-	}
-	if len(fresh) > poolMaxCandidates {
-		fresh = sampleEvenly(fresh, poolMaxCandidates)
 	}
 
 	added := 0
@@ -209,9 +206,6 @@ func (g *gateway) refreshPool(ctx context.Context) {
 		if !result.ok {
 			g.noteFailed(result.slot.addr)
 			continue
-		}
-		if g.customCount() >= poolMaxAutoSlots {
-			break
 		}
 		if g.addSlot(result.slot, true) {
 			added++
