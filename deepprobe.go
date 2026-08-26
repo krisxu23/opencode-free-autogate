@@ -18,23 +18,46 @@ import (
 //	第二轮 = chat 深检（每 IP 一次迷你对话），覆盖第一轮的全部幸存者，
 //	数量随池子规模动态决定——活下来多少就检多少，不设固定上限。
 //
-// 启动后槽位一就绪立刻跑首轮深检（用户第一句话之前假健康节点已被筛掉），
-// 之后按间隔 ±20% 抖动进入常规节奏。其余纪律：
-//   - 并发受「检测并发」封顶（默认 32 路，初检/复检共用，可配置），既并行又不至于同一瞬间
-//     几十个 IP 一起戳上游；
-//   - 打乱顺序，避免按固定次序形成可预测模式；
-//   - 重叠保护：上一轮没跑完就跳过本轮；
+// 启动后复检走两条并行通道：
+//  1. 流式：初检一有健康节点入池立即进 deepQueue 深检——不等整轮初检结束，
+//     边测边筛，用户第一句话之前假健康节点已被筛掉；
+//  2. 周期：按间隔 ±20% 抖动对全池做整体深检，兜住流式阶段之后才枯竭的额度。
+//
+// 其余纪律：
+//   - 流式 worker 数 = 「检测并发」的 1/8（1-16 个）；周期轮并发同上限；
+//   - 周期轮打乱顺序，避免按固定次序形成可预测模式；
+//   - 重叠保护：上一轮没跑完就跳过本轮；流式与周期轮可能对同一节点偶发
+//     重复深检，代价是多花一次迷你对话，可接受；
 //   - 坐"上游声明"板凳的出口不检（时间来自上游，戳了也白戳），
 //     坐"推断"板凳的出口优先检——成功即提前回归。
 func (g *gateway) startDeepProber(ctx context.Context) {
+	workers := g.probeConcurrency() / 8
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > 16 {
+		workers = 16
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case s := <-g.deepQueue:
+					g.deepProbeOne(ctx, s)
+				}
+			}
+		}()
+	}
+
 	interval := g.cfg.deepProbeInterval
 	if interval < 10*time.Minute {
 		interval = 10 * time.Minute
 	}
-	if !g.waitForCandidates(ctx) {
-		return
-	}
-	g.runDeepProbePass(ctx)
 	for {
 		next := interval + time.Duration(rand.Int63n(int64(interval)*2/5)) - interval/5 // ±20%
 		if next < time.Minute {
@@ -43,29 +66,11 @@ func (g *gateway) startDeepProber(ctx context.Context) {
 		select {
 		case <-time.After(next):
 		case <-ctx.Done():
+			wg.Wait()
 			return
 		}
 		g.runDeepProbePass(ctx)
 	}
-}
-
-// waitForCandidates 等初始槽位就绪（sing-box 桥接＋首次拉取通常几十秒），
-// 最长等 10 分钟。期间每 5 秒看一眼在场快照。
-func (g *gateway) waitForCandidates(ctx context.Context) bool {
-	deadline := time.Now().Add(10 * time.Minute)
-	for time.Now().Before(deadline) {
-		for _, candidate := range g.customSnapshot() {
-			if trackableExit(candidate.addr) {
-				return true
-			}
-		}
-		select {
-		case <-time.After(5 * time.Second):
-		case <-ctx.Done():
-			return false
-		}
-	}
-	return false
 }
 
 // probeConcurrency 是检测并发的统一封顶：GET 初检与 chat 深检/复检共用

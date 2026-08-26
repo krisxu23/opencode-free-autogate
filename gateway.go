@@ -150,6 +150,8 @@ type gateway struct {
 
 	usage *usageStats // 每日用量统计（usage_stats.json，见 usage.go）
 
+	deepQueue chan slot // 流式复检队列：初检一通过立即入队深检（见 deepprobe.go）
+
 	stickyMu     sync.Mutex
 	sticky       map[string]stickyEntry // 会话 → 上次胜出出口（prompt 缓存友好）
 	stickyWrites int                    // 插入计数：周期性强制清理过期项（见 stickyRemember）
@@ -169,6 +171,7 @@ func newGateway(cfg config) *gateway {
 		advSeen:     make(map[string]struct{}),
 		exits:       newExitTracker(),
 		usage:       newUsageStats(filepath.Dir(configPath())),
+		deepQueue:   make(chan slot, 2048),
 	}
 	usageObserver = func(model string, prompt, completion, cached int64) {
 		g.usage.Observe(model, prompt, completion, cached)
@@ -403,7 +406,7 @@ func (g *gateway) initCustomSlots(ctx context.Context) error {
 	g.advMu.Lock()
 	g.manualAdv = manualLinks
 	g.advMu.Unlock()
-	g.ensureAdvancedBridge(ctx, manualLinks)
+	_ = g.ensureAdvancedBridge(ctx, manualLinks) // 手动节点桥内直接入池，映射端口返回值忽略
 	parsed := g.parseCustomProxies(g.cfg.customProxies)
 	if len(parsed) == 0 {
 		return nil

@@ -118,9 +118,10 @@ func (b *advancedBridge) Close() {
 
 // ensureAdvancedBridge 把链接集合（手动 + 节点池订阅）合并进内嵌 sing-box。
 // 集合有变化时重建实例：先成功启动新的，再原子替换旧的；失败则沿用旧桥接。
-// 重建会重排本地端口，因此同步迁移槽位：手动节点直接保留，池节点重新探活。
-// 不设数量上限：多少链接就映射多少本地端口，节奏由「检测并发」控制。
-func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string) {
+// 重建会重排本地端口，因此同步迁移槽位：手动节点直接保留并立即入池，
+// 池来源的映射端口交回调用方，与普通代理合并进同一条「检测并发」队列。
+// 返回本轮映射出的池来源槽位（调用方负责探活入池）。
+func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string) []slot {
 	g.advMu.Lock()
 	all := make([]string, 0, len(g.advSeen)+len(freshLinks))
 	seenSet := make(map[string]struct{}, len(g.advSeen)+len(freshLinks))
@@ -139,7 +140,7 @@ func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string)
 	}
 	if g.advBridge != nil && len(all) == len(g.advSeen) {
 		g.advMu.Unlock()
-		return // 没有新增，无需重建
+		return nil // 没有新增，无需重建
 	}
 
 	items := make([]advancedItem, 0, len(all))
@@ -152,14 +153,14 @@ func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string)
 	}
 	if len(items) == 0 {
 		g.advMu.Unlock()
-		return // 没有可用的高级节点
+		return nil // 没有可用的高级节点
 	}
 
 	newBridge, err := startAdvancedBridge(items)
 	if err != nil {
 		g.advMu.Unlock()
 		log.Printf("[高级] sing-box (重)建失败，沿用现有配置: %v", err)
-		return
+		return nil
 	}
 	old := g.advBridge
 	var oldAddrs []string
@@ -213,20 +214,9 @@ func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string)
 		log.Printf("[高级] 节点更新：%d 个高级节点在线（新增候选 %d）", len(newBridge.Mapping), len(freshLinks))
 	}
 
-	// 池来源节点走探活门禁，健康才入池（无数量上限，节奏由「检测并发」控制）。
-	if len(autoSlots) > 0 {
-		added := 0
-		for _, result := range probeSlots(ctx, g, autoSlots) {
-			if result.slot.addr == "" || !result.ok {
-				continue
-			}
-			if g.addSlot(result.slot, true) {
-				added++
-				log.Printf("[高级+] %s (%dms)", result.slot.addr, result.latency.Milliseconds())
-			}
-		}
-		log.Printf("[高级] 探活通过 %d/%d", added, len(autoSlots))
-	}
+	// 池来源的映射端口不再在此探测：交回调用方与普通代理合并成
+	// 同一条初检队列（「检测并发」统一调度），避免两批串行排队。
+	return autoSlots
 }
 
 // advancedOutboundJSON 按协议生成 sing-box 出站配置片段。

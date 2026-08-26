@@ -180,13 +180,11 @@ func (g *gateway) refreshPool(ctx context.Context) {
 			freshAdv = append(freshAdv, link)
 		}
 	}
-	if len(freshAdv) > 0 {
-		g.ensureAdvancedBridge(ctx, freshAdv)
-	}
+	// 高级链接的本地映射端口与普通代理合并进同一条初检队列：
+	// 按用户设置的「检测并发」一路测完，不再分批串行。
+	advAuto := g.ensureAdvancedBridge(ctx, freshAdv)
 
-	// 测试多少完全由用户的源列表决定：新候选全量进探活队列，
-	// 并发节奏由「检测并发」信号量控制，这里不再设抽样上限。
-	fresh := make([]slot, 0, len(candidates))
+	fresh := make([]slot, 0, len(candidates)+len(advAuto))
 	for _, s := range candidates {
 		if _, dup := existing[s.addr]; dup {
 			continue
@@ -196,8 +194,15 @@ func (g *gateway) refreshPool(ctx context.Context) {
 		}
 		fresh = append(fresh, s)
 	}
+	plainNew := len(fresh)
+	fresh = append(fresh, advAuto...)
+	skipped := len(candidates) - plainNew
+	if len(fresh) > 0 {
+		log.Printf("[初检] 本轮待测候选 %d 个（普通 %d / 高级映射 %d），%d 路并发逐个检测；失败冷却跳过 %d",
+			len(fresh), plainNew, len(advAuto), g.probeConcurrency(), skipped)
+	}
 
-	added := 0
+	added, passed, failed := 0, 0, 0
 	justAdded := make(map[string]struct{})
 	for _, result := range probeSlots(ctx, g, fresh) {
 		if result.slot.addr == "" {
@@ -205,12 +210,25 @@ func (g *gateway) refreshPool(ctx context.Context) {
 		}
 		if !result.ok {
 			g.noteFailed(result.slot.addr)
+			failed++
 			continue
 		}
+		passed++
+		isAdv := strings.HasPrefix(result.slot.addr, "127.0.0.1:")
 		if g.addSlot(result.slot, true) {
 			added++
 			justAdded[result.slot.addr] = struct{}{}
-			log.Printf("[池+] %s (%dms)", result.slot.addr, result.latency.Milliseconds())
+			tag := "[池+]"
+			if isAdv {
+				tag = "[高级+]"
+			}
+			log.Printf("%s %s (%dms)", tag, result.slot.addr, result.latency.Milliseconds())
+			// 流式复检：初检一通过立即入队深检，不等整轮结束；
+			// 队列打满则丢弃，该节点随后的小时级整体复检仍会覆盖。
+			select {
+			case g.deepQueue <- result.slot:
+			default:
+			}
 		}
 	}
 
@@ -238,8 +256,8 @@ func (g *gateway) refreshPool(ctx context.Context) {
 		}
 	}
 
-	log.Printf("[池] 源 %d 个 | 候选 %d 条 | 新增 %d | 移除 %d | 池中 %d",
-		len(urls), len(candidates), added, dead, g.customCount())
+	log.Printf("[池] 本轮汇总：源 %d | 候选 %d（普通 %d / 高级映射 %d）| 初检通过 %d / 失败 %d | 新增入池 %d | 移除 %d | 池中 %d",
+		len(urls), len(candidates)+len(advAuto), plainNew, len(advAuto), passed, failed, added, dead, g.customCount())
 }
 
 // fetchPoolSources 逐个拉取节点源，自动识别 JSON（amux 风格）、纯文本列表与
