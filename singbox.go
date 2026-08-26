@@ -116,12 +116,10 @@ func (b *advancedBridge) Close() {
 	}
 }
 
-// maxAdvancedNodes 是桥接里高级节点的总量上限（含手动与节点池来源）。
-const maxAdvancedNodes = 200
-
 // ensureAdvancedBridge 把链接集合（手动 + 节点池订阅）合并进内嵌 sing-box。
 // 集合有变化时重建实例：先成功启动新的，再原子替换旧的；失败则沿用旧桥接。
 // 重建会重排本地端口，因此同步迁移槽位：手动节点直接保留，池节点重新探活。
+// 不设数量上限：多少链接就映射多少本地端口，节奏由「检测并发」控制。
 func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string) {
 	g.advMu.Lock()
 	all := make([]string, 0, len(g.advSeen)+len(freshLinks))
@@ -142,15 +140,6 @@ func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string)
 	if g.advBridge != nil && len(all) == len(g.advSeen) {
 		g.advMu.Unlock()
 		return // 没有新增，无需重建
-	}
-	if len(all) > maxAdvancedNodes {
-		all = sampleEvenly(all, maxAdvancedNodes)
-		// advSeen 只登记真正进入桥接的链接：被抽样丢掉的保留「未知」身份，
-		// 否则它们会被当成已处理而永远没有机会入选。
-		seenSet = make(map[string]struct{}, len(all))
-		for _, link := range all {
-			seenSet[link] = struct{}{}
-		}
 	}
 
 	items := make([]advancedItem, 0, len(all))
