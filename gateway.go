@@ -28,6 +28,7 @@ var (
 	errAttemptTimeout  = errors.New("代理首字节超时")
 	errRequestTimeout  = errors.New("请求总超时")
 	errNoProxy         = errors.New("没有可用代理")
+	errAllExitsFailed  = errors.New("本轮出口全部未交付（多为上游侧故障）")
 	errStreamTruncated = errors.New("上游流在首个数据块前中断")
 )
 
@@ -1350,7 +1351,7 @@ func (g *gateway) dispatchOnce(ctx context.Context, request upstreamRequest, tra
 			if isTerminalContextError(ctx, err) {
 				return nil, err
 			}
-			if !errors.Is(err, errNoProxy) {
+			if !errors.Is(err, errNoProxy) && !errors.Is(err, errAllExitsFailed) {
 				log.Printf("[层错] %s: %v", layer, err)
 			}
 			continue
@@ -1752,11 +1753,19 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 		}
 	}
 	if last != nil {
-		log.Printf("[竞速] 无健康出口，使用可重试兜底响应: %s", lastAddr)
+		log.Printf("[竞速] 本轮 %d 个出口均未交付可用响应，交出可重试兜底: %s（正式池 %d 个仍在册）",
+			launchedCount(), lastAddr, g.customCount())
 		trace.finalProxy = lastAddr
 		trace.upstream = shortUpstream(lastUpstream)
 		trace.winnerUpstream = lastUpstream
 		return last, nil
+	}
+	// 区分「池子空了」和「池子有节点但这一轮全部未交付」：后者绝大多数是
+	// 上游/链路侧问题，不该向用户报「没有可用代理」。
+	if g.customCount() > 0 {
+		log.Printf("[竞速] 本轮 %d 路全部失败，但正式池仍有 %d 个节点在册——按上游侧故障处理，稍后重试",
+			launchedCount(), g.customCount())
+		return nil, errAllExitsFailed
 	}
 	return nil, errNoProxy
 }

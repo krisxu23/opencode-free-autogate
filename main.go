@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -111,17 +112,42 @@ func main() {
 
 // listenAndServeWithRetry 处理「保存并重启」的端口竞争：旧进程释放端口可能比
 // 新进程绑定更慢，端口被占用（EADDRINUSE）期间短暂重试，而不是直接失败退出。
+// isAddrInUse 识别「端口已被占用」。Go 在 Windows 上 syscall.EADDRINUSE 常量
+// 与真实错误码 WSAEADDRINUSE(10048) 数值不相等，errors.Is 判定永远为假——
+// 这里补上数值比对与错误原话兜底，三重保险。
+func isAddrInUse(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		var errno syscall.Errno
+		if errors.As(err, &errno) && errno == 10048 { // WSAEADDRINUSE
+			return true
+		}
+	}
+	return strings.Contains(err.Error(), "Only one usage of each socket address")
+}
+
 func listenAndServeWithRetry(server *http.Server) error {
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		err := server.ListenAndServe()
-		if !errors.Is(err, syscall.EADDRINUSE) || time.Now().After(deadline) {
+		if !isAddrInUse(err) {
 			return err
 		}
-		log.Printf("[门] 端口暂被占用（旧进程退出中），稍后重试: %v", err)
-		time.Sleep(300 * time.Millisecond)
+		if time.Now().After(deadline) {
+			return fmt.Errorf("监听 %s 失败：端口被其他程序（或本程序的另一个实例）占用，已宽限重试 30 秒仍不可用: %w", server.Addr, err)
+		}
+		log.Printf("[门] 端口暂被占用（可能旧进程退出中），稍后重试: %v", err)
+		time.Sleep(500 * time.Millisecond)
 	}
 }
+
+// notifyFatal 已移除：端口占用现在通过日志与 30 秒宽限重试表达，
+// 不再需要额外的系统弹窗依赖。
 
 // isLoopbackListen 判断监听地址是否仅回环可达（localhost / 127.x / ::1）。
 func isLoopbackListen(addr string) bool {
@@ -567,6 +593,8 @@ func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace
 			response = jsonGatewayResponse(http.StatusGatewayTimeout, "请求超时")
 		case errors.Is(err, errNoProxy):
 			response = jsonGatewayResponse(http.StatusBadGateway, "没有可用代理")
+		case errors.Is(err, errAllExitsFailed):
+			response = jsonGatewayResponse(http.StatusBadGateway, "上游或链路暂时故障（节点池仍有在册节点），请重试")
 		case errors.Is(err, errStreamTruncated):
 			response = jsonGatewayResponse(http.StatusBadGateway, "上游流中断")
 		default:

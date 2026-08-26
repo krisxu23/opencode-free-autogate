@@ -145,9 +145,9 @@ func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string)
 
 	items := make([]advancedItem, 0, len(all))
 	for _, link := range all {
-		node, err := parseAdvancedNode(link)
+		node, err := prepareAdvancedNode(link)
 		if err != nil {
-			continue // 订阅里的坏行直接跳过
+			continue // 订阅里的坏行/不支持的加密方式直接跳过，不拖累整个实例
 		}
 		items = append(items, advancedItem{link: link, node: *node})
 	}

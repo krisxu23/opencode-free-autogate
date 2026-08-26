@@ -48,6 +48,47 @@ func isAdvancedScheme(scheme string) (string, bool) {
 	return kind, ok
 }
 
+// ssMethodAliases 把订阅里常见的别名/大小写写法归一到 sing-box 认的名字。
+// 公益订阅里 v2ray 系客户端习惯写 "chacha20-poly1305"，而 sing-box 只认
+// IETF 全名——这一个字符串差异就足以让整份配置初始化失败。
+var ssMethodAliases = map[string]string{
+	"chacha20-poly1305":             "chacha20-ietf-poly1305",
+	"xchacha20-poly1305":            "xchacha20-ietf-poly1305",
+	"chacha20-ietf-poly1305":        "chacha20-ietf-poly1305",
+	"xchacha20-ietf-poly1305":       "xchacha20-ietf-poly1305",
+	"aes-128-gcm":                   "aes-128-gcm",
+	"aes-192-gcm":                   "aes-192-gcm",
+	"aes-256-gcm":                   "aes-256-gcm",
+	"none":                          "none",
+	"2022-blake3-aes-128-gcm":       "2022-blake3-aes-128-gcm",
+	"2022-blake3-aes-256-gcm":       "2022-blake3-aes-256-gcm",
+	"2022-blake3-chacha20-poly1305": "2022-blake3-chacha20-poly1305",
+}
+
+// normalizeSSMethod 归一化 shadowsocks 加密方式；返回空串表示 sing-box
+// 不支持（传统流加密 rc4/cfb/ctr 等），该节点应在建桥前被单点剔除。
+func normalizeSSMethod(method string) string {
+	return ssMethodAliases[strings.ToLower(strings.TrimSpace(method))]
+}
+
+// prepareAdvancedNode 解析并校验一条高级链接：解析成功但参数为 sing-box
+// 不接受的形态（例如传统 SS 流加密）时直接报错，让调用方跳过这一条，
+// 而不是把整个 sing-box 实例拖崩。
+func prepareAdvancedNode(link string) (*advNode, error) {
+	node, err := parseAdvancedNode(link)
+	if err != nil {
+		return nil, err
+	}
+	if node.kind == "ss" {
+		normalized := normalizeSSMethod(node.method)
+		if normalized == "" {
+			return nil, fmt.Errorf("sing-box 不支持的 ss 加密方式 %q", node.method)
+		}
+		node.method = normalized
+	}
+	return node, nil
+}
+
 // parseAdvancedNode 把一条高级协议链接解析为统一的节点描述。
 func parseAdvancedNode(link string) (*advNode, error) {
 	schemeEnd := strings.Index(link, "://")
