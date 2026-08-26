@@ -142,32 +142,44 @@ func forEachProbeResult(ctx context.Context, limit int, items []slot,
 	wg.Wait()
 }
 
-// startPoolWatcher 初检主循环：连轴转，无轮间间隔——测完本轮立即重拉源
-// 进入下一轮。唯一护栏：本轮零新候选（源内容没更新）时歇 30 秒，
-// 防止空转打爆源站点。
+// probeRoundGap 两轮初检之间的最小间隔：公益源站按分钟级更新内容，
+// 抓得再勤也没有增量收益，只会招限流。默认 60 秒，可经
+// PROXY_PROBE_ROUND_GAP_MS 调整（夹紧 15 秒 ~ 30 分钟）。
+func (g *gateway) probeRoundGap() time.Duration {
+	gap := g.cfg.probeRoundGap
+	if gap <= 0 {
+		gap = 60 * time.Second
+	}
+	if gap < 15*time.Second {
+		gap = 15 * time.Second
+	}
+	if gap > 30*time.Minute {
+		gap = 30 * time.Minute
+	}
+	return gap
+}
+
+// startPoolWatcher 初检主循环：拉源 → 初检 → 歇一个轮间隔 → 立即进入
+// 下一轮。节奏感接近连轴转，但对源站保持每分钟至多一轮的礼貌频率。
 func (g *gateway) startPoolWatcher(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		hadWork := g.refreshPool(ctx)
-		if hadWork {
-			continue
-		}
+		g.refreshPool(ctx)
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(30 * time.Second):
+		case <-time.After(g.probeRoundGap()):
 		}
 	}
 }
 
 // refreshPool 一轮完整的「拉取 → 初检 → 入过关池」流程。
-// 返回本轮是否有待测候选（false = 源暂无新内容，调用方可小憩防打爆源站）。
-func (g *gateway) refreshPool(ctx context.Context) bool {
+func (g *gateway) refreshPool(ctx context.Context) {
 	urls := g.cfg.poolURLs
 	if len(urls) == 0 {
-		return false
+		return
 	}
 
 	existing := make(map[string]struct{})
@@ -252,7 +264,6 @@ func (g *gateway) refreshPool(ctx context.Context) bool {
 
 	log.Printf("[池] 本轮汇总：源 %d | 候选 %d（普通 %d / 高级映射 %d）| 初检通过 %d / 失败 %d | 待复检 %d | 正式池 %d",
 		len(urls), len(candidates)+len(advAuto), plainNew, len(advAuto), passed.Load(), failed.Load(), g.freshCount(), g.customCount())
-	return len(fresh) > 0
 }
 
 // fetchPoolSources 逐个拉取节点源，自动识别 JSON（amux 风格）、纯文本列表与

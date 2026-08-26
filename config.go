@@ -41,6 +41,7 @@ type config struct {
 	probeTimeout         time.Duration
 	probeChatTimeout     time.Duration // 迷你真实请求探活的超时：chat 首字节含上游排队，需远大于 GET 探活
 	refreshInterval      time.Duration
+	probeRoundGap        time.Duration // 两轮初检之间的最小间隔：公益源按分钟级更新，抓太勤只会招限流
 	streamIdle           time.Duration
 	raceEnabled          bool          // 并行竞速：同一请求同时发往多个出口，最快返回者胜出
 	raceWidth            int           // 竞速中自动节点最多同时尝试几路（手动节点始终全上）
@@ -101,6 +102,7 @@ func loadConfig(project projectSpec) config {
 		probeTimeout:         envMilliseconds("PROXY_PROBE_TIMEOUT", 8000),
 		probeChatTimeout:     envMilliseconds("PROXY_PROBE_CHAT_TIMEOUT", 25000),
 		refreshInterval:      envMilliseconds("PROXY_REFRESH_MS", 300000),
+		probeRoundGap:        envMilliseconds("PROXY_PROBE_ROUND_GAP_MS", 60000),
 		streamIdle:           envMilliseconds("STREAM_IDLE_TIMEOUT", 300000),
 		raceEnabled:          envIsOn(envString("PROXY_RACE", "1")),
 		raceWidth:            nonNegative(envInt("PROXY_RACE_WIDTH", 8)),
