@@ -152,6 +152,9 @@ type gateway struct {
 
 	deepQueue chan slot // 流式复检队列：初检一通过立即入队深检（见 deepprobe.go）
 
+	freshMu     sync.Mutex
+	freshPassed map[string]slot // 初检过关待复检的内部池：不参与竞速、界面不显示，复检通过才转正
+
 	stickyMu     sync.Mutex
 	sticky       map[string]stickyEntry // 会话 → 上次胜出出口（prompt 缓存友好）
 	stickyWrites int                    // 插入计数：周期性强制清理过期项（见 stickyRemember）
@@ -172,6 +175,7 @@ func newGateway(cfg config) *gateway {
 		exits:       newExitTracker(),
 		usage:       newUsageStats(filepath.Dir(configPath())),
 		deepQueue:   make(chan slot, 2048),
+		freshPassed: make(map[string]slot),
 	}
 	usageObserver = func(model string, prompt, completion, cached int64) {
 		g.usage.Observe(model, prompt, completion, cached)
@@ -708,7 +712,10 @@ func (g *gateway) probe(ctx context.Context, candidate slot) bool {
 
 // deepProbeOne 是 chat 深检：max_tokens=1 的真实对话，穿透上游额度门。
 // 专抓"GET 探活通过但额度已枯竭"的假健康节点。
-func (g *gateway) deepProbeOne(ctx context.Context, candidate slot) bool {
+// 返回 ok=深检是否通过；hardFail=true 表示节点本身连不通/不可达
+// （传输失败或持续 5xx），可安全淘汰；额度限流与模型名被拒属软失败，
+// 节点可能没坏，只走既有板凳/忽略逻辑，不淘汰。
+func (g *gateway) deepProbeOne(ctx context.Context, candidate slot) (ok bool, hardFail bool) {
 	deadline := time.Now().Add(g.cfg.probeChatTimeout)
 	headers := g.cfg.project.probeHeaders.Clone()
 	headers.Set("Content-Type", "application/json")
@@ -724,7 +731,7 @@ func (g *gateway) deepProbeOne(ctx context.Context, candidate slot) bool {
 	if err != nil {
 		// 传输失败走普通失败阶梯，不算额度问题。
 		g.exits.observeProbe(candidate.addr, 0, false)
-		return false
+		return false, true
 	}
 	status := live.response.StatusCode
 	var body []byte
@@ -738,15 +745,85 @@ func (g *gateway) deepProbeOne(ctx context.Context, candidate slot) bool {
 		// 模型名被上游拒绝是网关侧配置问题（列表里有 ≠ chat 门放行），
 		// 不是出口健康问题：只报告不记账，避免一个坏模型名全员误伤。
 		log.Printf("[深检] %s 拒绝模型 %s（HTTP %d），不计出口失败", candidate.addr, g.probeModelID(), status)
-		return false
+		return false, false
 	}
 	if d, src := classifyUpstreamFailure(status, body, retryAfter); src != benchNone {
 		g.exits.observeQuotaBurn(candidate.addr, d, src)
+		return false, false
+	}
+	ok = status >= 200 && status < 300
+	g.exits.observeProbe(candidate.addr, time.Since(started), ok)
+	return ok, !ok
+}
+
+// addFresh 初检通过：进内部过关池等待复检。此池不参与竞速、界面不显示。
+func (g *gateway) addFresh(s slot) {
+	g.freshMu.Lock()
+	defer g.freshMu.Unlock()
+	if g.freshPassed == nil {
+		g.freshPassed = make(map[string]slot)
+	}
+	g.freshPassed[s.addr] = s
+}
+
+func (g *gateway) hasFresh(addr string) bool {
+	g.freshMu.Lock()
+	defer g.freshMu.Unlock()
+	_, ok := g.freshPassed[addr]
+	return ok
+}
+
+func (g *gateway) removeFresh(addr string) bool {
+	g.freshMu.Lock()
+	defer g.freshMu.Unlock()
+	if _, ok := g.freshPassed[addr]; !ok {
 		return false
 	}
-	ok := status >= 200 && status < 300
-	g.exits.observeProbe(candidate.addr, time.Since(started), ok)
-	return ok
+	delete(g.freshPassed, addr)
+	return true
+}
+
+func (g *gateway) freshSnapshot() []slot {
+	g.freshMu.Lock()
+	defer g.freshMu.Unlock()
+	out := make([]slot, 0, len(g.freshPassed))
+	for _, s := range g.freshPassed {
+		out = append(out, s)
+	}
+	return out
+}
+
+func (g *gateway) freshCount() int {
+	g.freshMu.Lock()
+	defer g.freshMu.Unlock()
+	return len(g.freshPassed)
+}
+
+// settleDeep 依据复检结果安置节点：
+//   - 通过：内部过关池 → 晋升正式池（此刻起参与竞速）；
+//   - 硬失败（连不通）：候选直接淘汰，正式节点移出正式池；
+//   - 软失败（额度限流/模型被拒）：不动池位，交给既有板凳/忽略逻辑。
+//
+// 手动节点永不自动移除。
+func (g *gateway) settleDeep(s slot, ok, hardFail bool) {
+	if ok {
+		if g.removeFresh(s.addr) {
+			if g.addSlot(s, true) {
+				log.Printf("[转正] %s（复检通过，进入正式池）", s.addr)
+			}
+		}
+		return
+	}
+	if !hardFail {
+		return // 软失败：板凳已记账，保留池位
+	}
+	if g.removeFresh(s.addr) {
+		log.Printf("[淘汰] %s（复检连不通）", s.addr)
+		return
+	}
+	if !g.isManual(s.addr) && g.dropCustom(s.addr) {
+		log.Printf("[池-] %s（复检连不通）", s.addr)
+	}
 }
 
 func (g *gateway) takeCandidates(limit int) []proxyItem {

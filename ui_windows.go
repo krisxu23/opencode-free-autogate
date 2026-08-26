@@ -175,11 +175,11 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 							},
 
 							dcl.GroupBox{
-								Title:  "实时在线节点",
+								Title:  "正式节点（复检合格）",
 								Font:   uiFont,
 								Layout: dcl.VBox{Spacing: 6},
 								Children: []dcl.Widget{
-									dcl.Label{Text: "探活通过自动加入、失效自动移除；手动节点永不自动移除:"},
+									dcl.Label{Text: "以下节点已通过初检＋复检双重验证，可放心使用；手动节点永不自动移除:"},
 									dcl.TextEdit{
 										AssignTo: &ui.poolLive,
 										ReadOnly: true,
@@ -528,7 +528,7 @@ func (ui *gatewayUI) refreshPoolLive() {
 	slots := ui.app.gateway.customSnapshot()
 	var text string
 	if len(slots) == 0 {
-		text = "（暂无在线节点，等待探活…）"
+		text = "（暂无正式节点，初检通过的候选正在流水线复检中…）"
 	} else {
 		lines := make([]string, 0, len(slots))
 		for _, s := range slots {

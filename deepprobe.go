@@ -48,7 +48,8 @@ func (g *gateway) startDeepProber(ctx context.Context) {
 				case <-ctx.Done():
 					return
 				case s := <-g.deepQueue:
-					g.deepProbeOne(ctx, s)
+					ok, hard := g.deepProbeOne(ctx, s)
+					g.settleDeep(s, ok, hard)
 				}
 			}
 		}()
@@ -96,7 +97,9 @@ func (g *gateway) runDeepProbePass(ctx context.Context) {
 	}
 	defer g.deepRunning.Store(false)
 
+	// 周期复检覆盖两池：正式池（再验证）＋ 内部过关池（漏网流式的兜底）。
 	candidates := g.customSnapshot()
+	candidates = append(candidates, g.freshSnapshot()...)
 	pool := make([]slot, 0, len(candidates))
 	for _, candidate := range candidates {
 		if !trackableExit(candidate.addr) {
@@ -129,7 +132,8 @@ func (g *gateway) runDeepProbePass(ctx context.Context) {
 					return
 				default:
 				}
-				ok := g.deepProbeOne(ctx, candidate)
+				ok, hard := g.deepProbeOne(ctx, candidate)
+				g.settleDeep(candidate, ok, hard)
 				mu.Lock()
 				if ok {
 					alive++

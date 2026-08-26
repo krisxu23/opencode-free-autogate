@@ -137,35 +137,40 @@ func probeSlots(ctx context.Context, g *gateway, items []slot) []poolProbeResult
 	return results
 }
 
-// startPoolWatcher 周期性拉取节点源、探活并入池；失效节点自动移除。全程无需重启。
+// startPoolWatcher 初检主循环：连轴转，无轮间间隔——测完本轮立即重拉源
+// 进入下一轮。唯一护栏：本轮零新候选（源内容没更新）时歇 30 秒，
+// 防止空转打爆源站点。
 func (g *gateway) startPoolWatcher(ctx context.Context) {
-	g.refreshPool(ctx)
-	interval := g.cfg.refreshInterval
-	if interval < time.Minute {
-		interval = time.Minute
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		hadWork := g.refreshPool(ctx)
+		if hadWork {
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			g.refreshPool(ctx)
+		case <-time.After(30 * time.Second):
 		}
 	}
 }
 
-// refreshPool 一轮完整的「拉取 → 探活 → 入池 / 剔除」流程。
-func (g *gateway) refreshPool(ctx context.Context) {
+// refreshPool 一轮完整的「拉取 → 初检 → 入过关池」流程。
+// 返回本轮是否有待测候选（false = 源暂无新内容，调用方可小憩防打爆源站）。
+func (g *gateway) refreshPool(ctx context.Context) bool {
 	urls := g.cfg.poolURLs
 	if len(urls) == 0 {
-		return
+		return false
 	}
 
 	existing := make(map[string]struct{})
 	for _, addr := range g.slotAddresses(true) {
 		existing[addr] = struct{}{}
+	}
+	for _, s := range g.freshSnapshot() { // 初检已过关待复检的：本轮不重复初检
+		existing[s.addr] = struct{}{}
 	}
 
 	candidates, advLinks := g.fetchPoolSources(ctx, urls)
@@ -202,8 +207,7 @@ func (g *gateway) refreshPool(ctx context.Context) {
 			len(fresh), plainNew, len(advAuto), g.probeConcurrency(), skipped)
 	}
 
-	added, passed, failed := 0, 0, 0
-	justAdded := make(map[string]struct{})
+	passed, failed := 0, 0
 	for _, result := range probeSlots(ctx, g, fresh) {
 		if result.slot.addr == "" {
 			continue
@@ -215,49 +219,31 @@ func (g *gateway) refreshPool(ctx context.Context) {
 		}
 		passed++
 		isAdv := strings.HasPrefix(result.slot.addr, "127.0.0.1:")
-		if g.addSlot(result.slot, true) {
-			added++
-			justAdded[result.slot.addr] = struct{}{}
-			tag := "[池+]"
-			if isAdv {
-				tag = "[高级+]"
-			}
-			log.Printf("%s %s (%dms)", tag, result.slot.addr, result.latency.Milliseconds())
-			// 流式复检：初检一通过立即入队深检，不等整轮结束；
-			// 队列打满则丢弃，该节点随后的小时级整体复检仍会覆盖。
-			select {
-			case g.deepQueue <- result.slot:
-			default:
-			}
+		// 初检只发内部过关池资格：不参与竞速、界面不显示，
+		// 等流式复检通过后才转正为正式出口。
+		g.addFresh(result.slot)
+		tag := "[池+]"
+		if isAdv {
+			tag = "[高级+]"
 		}
+		log.Printf("%s %s (%dms)", tag, result.slot.addr, result.latency.Milliseconds())
+		// 流式复检：初检一通过立即入队深检，不等整轮结束；
+		// 队列打满则丢弃，该节点随后的小时级整体复检仍会覆盖。
+		select {
+		case g.deepQueue <- result.slot:
+		default:
+		}
+	}
+	if len(fresh) > 0 {
+		log.Printf("[初检] 本轮完毕：通过 %d / 失败 %d（通过者已进入复检流水线）", passed, failed)
 	}
 
-	// 复检现有节点，剔除已失效的，保持池子新鲜。
-	// 本轮刚入池的跳过（几秒前刚探活通过）；手动节点永不自动移除。
-	current := g.customSnapshot()
-	var recheck []slot
-	for _, s := range current {
-		if _, skip := justAdded[s.addr]; skip {
-			continue
-		}
-		if g.isManual(s.addr) {
-			continue
-		}
-		recheck = append(recheck, s)
-	}
-	dead := 0
-	for _, result := range probeSlots(ctx, g, recheck) {
-		if result.slot.addr == "" {
-			continue
-		}
-		if !result.ok && g.dropCustom(result.slot.addr) {
-			dead++
-			log.Printf("[池-] %s", result.slot.addr)
-		}
-	}
+	// 剪除失效节点的职责已移交复检：深检连不通即淘汰/移出（见 settleDeep），
+	// 初检循环不再每轮对存量正式节点做 GET 复剪。
 
-	log.Printf("[池] 本轮汇总：源 %d | 候选 %d（普通 %d / 高级映射 %d）| 初检通过 %d / 失败 %d | 新增入池 %d | 移除 %d | 池中 %d",
-		len(urls), len(candidates)+len(advAuto), plainNew, len(advAuto), passed, failed, added, dead, g.customCount())
+	log.Printf("[池] 本轮汇总：源 %d | 候选 %d（普通 %d / 高级映射 %d）| 初检通过 %d / 失败 %d | 待复检 %d | 正式池 %d",
+		len(urls), len(candidates)+len(advAuto), plainNew, len(advAuto), passed, failed, g.freshCount(), g.customCount())
+	return len(fresh) > 0
 }
 
 // fetchPoolSources 逐个拉取节点源，自动识别 JSON（amux 风格）、纯文本列表与
