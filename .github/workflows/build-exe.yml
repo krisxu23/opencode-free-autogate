@@ -99,7 +99,9 @@ jobs:
         shell: bash
         run: |
           gh release delete exe-latest --yes --cleanup-tag || true
-          gh release create exe-latest \
+          # --draft=false 显式钉死：runner 的 gh 曾把 create 产物落成草稿
+          # （草稿仅维护者可见，访客/直链全部拿不到），这里不给默认行为留余地。
+          gh release create exe-latest --draft=false \
             --title "Windows EXE (latest)" \
             --notes "自动构建于 $(date -u '+%Y-%m-%d %H:%M UTC')，源码 commit ${GITHUB_SHA::7}
 
