@@ -43,6 +43,8 @@ type gatewayUI struct {
 
 	banner        *walk.CustomWidget // 顶部自绘信息卡（应用名/运行时长/健康状态灯）
 	start         time.Time          // 界面启动时刻，用于运行时长显示
+	usageLabel    *walk.Label        // 今日用量统计行
+	usageText     string
 	statusLabel   *walk.Label
 	headline      *walk.Label
 	headlineText  string
@@ -123,6 +125,9 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 									dcl.Label{AssignTo: &ui.headline, Text: "● 启动中…", Font: headlineFont, TextColor: colorIdle, ColumnSpan: 3},
 
 									dcl.Label{AssignTo: &ui.statusLabel, Text: "正在初始化…", Font: uiFont, ColumnSpan: 3},
+
+									dcl.Label{Text: "今日用量:", Font: uiFont},
+									dcl.Label{AssignTo: &ui.usageLabel, Text: "—", Font: monoFont, ColumnSpan: 2},
 
 									dcl.Label{Text: "API 地址:"},
 									dcl.LineEdit{AssignTo: &ui.apiEdit, Text: apiBase, ReadOnly: true, Font: monoFont},
@@ -352,6 +357,40 @@ func (ui *gatewayUI) tick() {
 	ui.refreshHeadline()
 	ui.refreshStatus()
 	ui.refreshPoolLive()
+	ui.refreshUsage()
+}
+
+func formatTokens(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1e3)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+// refreshUsage 同步今日用量行；内容没变化不重绘。
+func (ui *gatewayUI) refreshUsage() {
+	if ui.usageLabel == nil || ui.app.gateway == nil || ui.app.gateway.usage == nil {
+		return
+	}
+	rows := ui.app.gateway.usage.Snapshot()
+	var reqs, prompt, completion int64
+	for _, r := range rows {
+		reqs += r.Requests
+		prompt += r.PromptTokens
+		completion += r.CompletionTokens
+	}
+	text := fmt.Sprintf("%d 次 · 入 %s / 出 %s tokens", reqs, formatTokens(prompt), formatTokens(completion))
+	if len(rows) > 0 {
+		text += fmt.Sprintf(" · %d 个模型", len(rows))
+	}
+	if text != ui.usageText {
+		ui.usageText = text
+		ui.usageLabel.SetText(text)
+	}
 }
 
 // refreshHeadline 更新顶部大号状态行与窗口标题，一眼读出全局状态；

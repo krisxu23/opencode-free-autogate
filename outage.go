@@ -20,6 +20,9 @@ import (
 //   - 吸收模式重试切换为指数退避，停止风暴式轰炸；
 //   - 静默 60 秒后自动解除，无需人工干预。
 
+// outageNow 可注入时钟：测试固定时间线，生产用 time.Now。
+var outageNow = time.Now
+
 type outageEvent struct {
 	at     time.Time
 	exit   string // 出口地址；纯镜像级事件为空
@@ -30,11 +33,14 @@ type outageBreaker struct {
 	mu           sync.Mutex
 	events       []outageEvent
 	trippedUntil time.Time
+	probeAt      time.Time // 本轮熔断允许半开探针的最早时刻
+	probed       bool      // 本轮熔断是否已放行过探针
 }
 
 const (
 	outageWindow      = 45 * time.Second
 	outageHoldQuiet   = 60 * time.Second // 判定后静默多久自动解除
+	outageProbeDelay  = 30 * time.Second // 静默多久后允许单发半开探针（借鉴 cc-switch HalfOpen 态）
 	outageTripEvents  = 6                // 窗口内失败事件数阈值
 	outageTripExits   = 4                // 且横跨的不同出口数
 	outageTripMirrors = 2                // 且横跨的不同镜像数
@@ -42,7 +48,7 @@ const (
 
 // record 记录一次失败证据并重估熔断状态。窗口外旧证据随手清理。
 func (b *outageBreaker) record(exit, mirror string) {
-	b.recordAt(time.Now(), exit, mirror)
+	b.recordAt(outageNow(), exit, mirror)
 }
 
 func (b *outageBreaker) recordAt(now time.Time, exit, mirror string) {
@@ -62,6 +68,8 @@ func (b *outageBreaker) recordAt(now time.Time, exit, mirror string) {
 	if now.After(b.trippedUntil) {
 		log.Printf("[全局熔断] %d 秒内 %d 个出口 / %d 个镜像同时失败，疑似上游或链路级故障：冻结惩罚并转入指数退避",
 			int(outageWindow.Seconds()), countDistinctExits(b.events), countDistinctMirrors(b.events))
+		b.probeAt = now.Add(outageProbeDelay)
+		b.probed = false
 	}
 	b.trippedUntil = now.Add(outageHoldQuiet)
 }
@@ -70,7 +78,38 @@ func (b *outageBreaker) recordAt(now time.Time, exit, mirror string) {
 func (b *outageBreaker) Tripped() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return time.Now().Before(b.trippedUntil)
+	return outageNow().Before(b.trippedUntil)
+}
+
+// TryProbe 熔断保持期间申请放行一次半开探针：每轮熔断仅限一次，
+// 且需已静默 outageProbeDelay。返回 false 表示继续按指数退避等待；
+// 返回 true 表示本轮请求可立即发出、不受退避约束（借鉴 cc-switch
+// circuit_breaker 的 HalfOpen 态，把最坏 60 秒的恢复等待压缩一半）。
+func (b *outageBreaker) TryProbe() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := outageNow()
+	if !now.Before(b.trippedUntil) {
+		return true // 已自然解除，无需探针语义
+	}
+	if b.probed || now.Before(b.probeAt) {
+		return false
+	}
+	b.probed = true
+	log.Printf("[全局熔断] 已静默 %d 秒，放行半开探针请求验证上游恢复", int(outageProbeDelay.Seconds()))
+	return true
+}
+
+// NoteSuccess 记录一次上游完整成功：若本轮半开探针已放行，则提前解除熔断。
+func (b *outageBreaker) NoteSuccess() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := outageNow()
+	if now.Before(b.trippedUntil) && b.probed {
+		b.trippedUntil = now
+		b.probed = false
+		log.Printf("[全局熔断] 半开探针成功，提前解除全局熔断")
+	}
 }
 
 func countDistinctExits(events []outageEvent) int {

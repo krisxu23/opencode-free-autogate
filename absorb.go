@@ -53,9 +53,16 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 	var fallback *gatewayResponse
 	stormLogged := false
 	pauseAbsorb := func(attempt int) {
-		if g.outage.Tripped() && !stormLogged {
-			stormLogged = true
-			log.Printf("[吸收] 全局熔断生效，切换指数退避")
+		if g.outage.Tripped() {
+			if !stormLogged {
+				stormLogged = true
+				log.Printf("[吸收] 全局熔断生效，切换指数退避")
+			}
+			if g.outage.TryProbe() {
+				return // 半开探针：跳过本次退避，立即放行一次尝试验证恢复
+			}
+			time.Sleep(g.absorbBackoff(attempt))
+			return
 		}
 		time.Sleep(g.absorbBackoff(attempt))
 	}
@@ -114,6 +121,7 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 		if header.Get("Content-Type") == "" {
 			header.Set("Content-Type", "text/event-stream; charset=utf-8")
 		}
+		g.outage.NoteSuccess() // 完整回复=上游活着：半开探针成功则提前解除熔断
 		log.Printf("[吸收] 第 %d 次尝试取得完整回复（出口:%s 镜像:%s，%d 字节）",
 			attempt, trace.finalProxy, trace.upstream, len(data))
 		return &gatewayResponse{status: http.StatusOK, header: header, body: data}, nil

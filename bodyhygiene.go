@@ -109,6 +109,41 @@ func enhanceRequestBodyPayload(payload map[string]any, injectCache bool) bool {
 		}
 	}
 
+	// 工具调用参数兜底（借鉴 cc-switch json_canonical 规则）：
+	// 空/纯空白 arguments 会被 Minimax 等严格上游以 400
+	// invalid function arguments json string 拒绝整个请求；
+	// 宽松上游（OpenAI/Kimi）虽容忍，但统一补 "{}" 零风险。
+	if msgs, ok := payload["messages"].([]any); ok {
+		fixed := false
+		for _, m := range msgs {
+			entry, ok := m.(map[string]any)
+			if !ok {
+				continue
+			}
+			calls, ok := entry["tool_calls"].([]any)
+			if !ok {
+				continue
+			}
+			for _, c := range calls {
+				call, ok := c.(map[string]any)
+				if !ok {
+					continue
+				}
+				fn, ok := call["function"].(map[string]any)
+				if !ok {
+					continue
+				}
+				if a, ok := fn["arguments"].(string); ok && strings.TrimSpace(a) == "" {
+					fn["arguments"] = "{}"
+					fixed = true
+				}
+			}
+		}
+		if fixed {
+			changed = true
+		}
+	}
+
 	if injectCache && model != "" {
 		// retention 是上游网关字段，各模型通吃；cache_control 仅 Anthropic
 		// 系翻译层接受，GLM/Zhipu 系模型会拒收，按前缀黑名单跳过。
@@ -117,11 +152,43 @@ func enhanceRequestBodyPayload(payload map[string]any, injectCache bool) bool {
 			changed = true
 		}
 		if cc, ok := payload["cache_control"].(map[string]any); (!ok || cc["type"] != "ephemeral") && !rejectsCacheControl(model) {
-			payload["cache_control"] = map[string]any{"type": "ephemeral", "ttl": "1h"}
-			changed = true
+			// 断点预算管理（借鉴 cc-switch cache_injector）：Anthropic 系
+			// 上游最多接受 4 个 cache_control 断点，客户端自带标记超限时
+			// 不再叠加注入，避免整个请求被上游判非法。
+			if countCacheControl(payload) < maxCacheControlBreakpoints {
+				payload["cache_control"] = map[string]any{"type": "ephemeral", "ttl": "1h"}
+				changed = true
+			}
 		}
 	}
 	return changed
+}
+
+// maxCacheControlBreakpoints Anthropic 系上游允许的 cache_control 断点上限。
+const maxCacheControlBreakpoints = 4
+
+// countCacheControl 递归统计 payload 中已存在的 cache_control 标记数，
+// 供断点预算管理判断是否还能叠加注入（借鉴 cc-switch cache_injector）。
+func countCacheControl(v any) int {
+	switch t := v.(type) {
+	case map[string]any:
+		n := 0
+		for k, child := range t {
+			if k == "cache_control" {
+				n++
+			}
+			n += countCacheControl(child)
+		}
+		return n
+	case []any:
+		n := 0
+		for _, child := range t {
+			n += countCacheControl(child)
+		}
+		return n
+	default:
+		return 0
+	}
 }
 
 func hasFunctionName(item any) bool {

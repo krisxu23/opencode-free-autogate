@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -147,6 +148,8 @@ type gateway struct {
 
 	outage outageBreaker // 全局故障熔断：跨出口/镜像的聚集失败判定（见 outage.go）
 
+	usage *usageStats // 每日用量统计（usage_stats.json，见 usage.go）
+
 	stickyMu     sync.Mutex
 	sticky       map[string]stickyEntry // 会话 → 上次胜出出口（prompt 缓存友好）
 	stickyWrites int                    // 插入计数：周期性强制清理过期项（见 stickyRemember）
@@ -158,14 +161,19 @@ type gateway struct {
 }
 
 func newGateway(cfg config) *gateway {
-	return &gateway{
+	g := &gateway{
 		cfg:         cfg,
 		poolFailed:  make(map[string]time.Time),
 		customFails: make(map[string]int),
 		manualAddrs: make(map[string]struct{}),
 		advSeen:     make(map[string]struct{}),
 		exits:       newExitTracker(),
+		usage:       newUsageStats(filepath.Dir(configPath())),
 	}
+	usageObserver = func(model string, prompt, completion, cached int64) {
+		g.usage.Observe(model, prompt, completion, cached)
+	}
+	return g
 }
 
 // markManual 登记手动节点：这类节点永不参与自动探活剔除。
@@ -378,6 +386,9 @@ func (g *gateway) fillSlots(ctx context.Context) error {
 
 // Close 释放内嵌 sing-box 等后台资源（进程退出时系统也会回收）。
 func (g *gateway) Close() {
+	if g.usage != nil {
+		g.usage.Close()
+	}
 	g.advMu.Lock()
 	bridge := g.advBridge
 	g.advMu.Unlock()

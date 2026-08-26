@@ -22,6 +22,10 @@ import (
 
 const maxRequestBody = 32 << 20
 
+// usageObserver 由 newGateway 装配：流式转发路径边写边解析 usage 块，
+// 避免给 streamResponse 增加网关依赖（缓冲响应在 finish() 统一记账）。
+var usageObserver func(model string, prompt, completion, cached int64)
+
 // uiMode 由链接期 -ldflags "-X main.uiMode=..." 指定：gui 打开窗口，console 保持纯日志。
 var uiMode = "console"
 
@@ -598,6 +602,13 @@ func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace
 	if a.gateway.cfg.echoDebug && response != nil {
 		logEchoHeaders(r.URL.Path, response.status, response.header)
 	}
+	// 用量统计：缓冲响应（吸收成品/非流式 JSON）在此统一记账；
+	// 流式路径由 streamResponse 内的采集器负责，两边不会重复计数。
+	if a.gateway.usage != nil && response != nil && response.live == nil && len(response.body) > 0 {
+		if m, us, ok := ExtractLastUsage(response.body); ok {
+			a.gateway.usage.Observe(m, us.PromptTokens, us.CompletionTokens, us.CachedTokens)
+		}
+	}
 	if guard.Committed() {
 		// 响应头已提前提交，状态码无法再改变：赢家流透传，其余转为 SSE 错误事件。
 		writeCommittedStream(w, r, response, a.gateway.cfg.streamIdle, observe, hyg)
@@ -674,6 +685,33 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 	// 扫描对象是清洗后待转发的字节——客户端看到什么，就以什么为准记账。
 	terminalSeen := false
 	var window []byte
+	// 用量采集：流式 chunk 里出现 "usage" 的 data 行按行解析，
+	// 最后一个非空 usage 为准（与 ExtractLastUsage 同口径）。
+	var usageScan []byte
+	collectUsage := func(chunk []byte) {
+		if usageObserver == nil {
+			return
+		}
+		usageScan = append(usageScan, chunk...)
+		for {
+			idx := bytes.IndexByte(usageScan, '\n')
+			if idx < 0 {
+				if len(usageScan) > 1<<20 { // 异常无换行流防御
+					usageScan = nil
+				}
+				break
+			}
+			line := string(usageScan[:idx])
+			usageScan = usageScan[idx+1:]
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, "data:") || !strings.Contains(line, `"usage"`) {
+				continue
+			}
+			if m, us, ok := ExtractLastUsage([]byte(line)); ok {
+				usageObserver(m, us.PromptTokens, us.CompletionTokens, us.CachedTokens)
+			}
+		}
+	}
 	scan := func(chunk []byte) {
 		if terminalSeen {
 			return
@@ -694,6 +732,7 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 			return true
 		}
 		scan(chunk)
+		collectUsage(chunk)
 		if _, err := w.Write(chunk); err != nil {
 			return false
 		}
