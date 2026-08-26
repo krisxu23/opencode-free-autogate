@@ -36,7 +36,7 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 |---|---|
 | **对冲竞速** | 出口按近期表现评分排序、分批出发（首批少量、迟迟无人交付首块再加发）；出口轮流分散到主上游与各镜像；最快交付者胜出，其余立即取消 |
 | **会话粘性** | 同会话钉住上次胜出的出口（30 分钟 TTL），上游提示缓存命中率实测 99.8% vs 竞速轮换 0%；钉住失败自动照常升级竞速，可用性不受影响 |
-| **缓存字段注入** | 自动附加 `prompt_cache_retention=24h` ＋ `cache_control`（GLM/Zhipu 系自动跳过），延长上游提示缓存 TTL |
+| **缓存字段注入** | 自动附加 `prompt_cache_retention=24h` ＋ `cache_control`（GLM/Zhipu 系自动跳过；客户端自带断点达 4 个上限时不再叠加，防上游判非法），延长上游提示缓存 TTL |
 | **SSE 保活** | 竞速超过 5 秒未决时提前提交 SSE 响应头并发心跳注释行，客户端不会误判断线 |
 | **吸收模式** | 流式回复在网关内完整接收并校验，中途截断自动换道重试（默认最多 10 次），客户端全程只看保活心跳；拿到验证完整的原文后一次性交付 |
 
@@ -52,7 +52,7 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 
 | 功能 | 说明 |
 |---|---|
-| **全局熔断器** | 45 秒滑动窗口内 ≥6 次失败横跨 ≥4 个出口且 ≥2 个镜像 → 判定上游/链路级故障：冻结一切出口惩罚、吸收模式转指数退避（300ms→9.6s 封顶）、静默 60 秒自动解除——源站抖动不再引发全池雪崩 |
+| **全局熔断器** | 45 秒滑动窗口内 ≥6 次失败横跨 ≥4 个出口且 ≥2 个镜像 → 判定上游/链路级故障：冻结一切出口惩罚、吸收模式转指数退避（300ms→9.6s 封顶）、静默 60 秒自动解除——源站抖动不再引发全池雪崩。静默满 30 秒额外放行一次「半开探针」立即重试，成功即提前解除（借鉴 cc-switch HalfOpen 态），最坏恢复等待从 60 秒压到约 30 秒 |
 | **失败归因修正** | ctx 取消/预算到期的竞速腿不再被误记为镜像失败；只有真实上游错误才参与记账与熔断判定 |
 | **唤醒恢复** | 检测 Windows 休眠恢复（5 秒心跳），清死连接池＋补槽，睡眠后第一波请求不撞陈旧套接字；与熔断器互补——一个管"节点死了"，一个管"大家都被冤枉了" |
 
@@ -61,7 +61,7 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 | 功能 | 说明 |
 |---|---|
 | **协议兼容** | OpenAI / Anthropic / Codex 三种路由，客户端零改造接入 |
-| **请求体卫生** | 自动剔除缺失 function.name 的工具条目、tools 超 128 截断、剥离 client_metadata——畸形请求体不再烧掉出口尝试 |
+| **请求体卫生** | 自动剔除缺失 function.name 的工具条目、tools 超 128 截断、剥离 client_metadata、空 `tool_calls.arguments` 补 `"{}"`（Minimax 系严格上游会对空参数拒收整个请求）——畸形请求体不再烧掉出口尝试 |
 | **请求指纹整形** | 出站 body 顶层键序统一对齐原生 CLI 构造序（chat 形态取自 @ai-sdk/openai-compatible 源码、responses 形态取自 OmniRoute 抓包），消灭"改写过=字母序、没改过=原序"的双指纹特征；Anthropic `/v1/messages` 无可靠依据，刻意不整形 |
 | **SSE 分块卫生** | 直通流与吸收流双路径：丢弃解析失败的 `data:` 行（上游夹带的错误页不再喂给客户端）、删除空 `tool_calls:[]`、补缺失的 object/created 字段；>1MB 整行透传、截断维持静默干净关闭语义 |
 | **思考模型兼容** | deepseek/kimi/minimax 系模型多轮对话自动补 `reasoning_content` 占位符，防止 OpenAI 格式客户端缺字段导致上游 400 |
@@ -86,6 +86,7 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 |---|---|
 | **深色标题栏** | 跟随系统暗色开关（Win10 20H1+）；Win11 额外标题栏染色＋Mica 材质，老系统静默降级 |
 | **自绘信息卡** | 顶部横幅：应用名 ＋ 运行时长秒级跳动 ＋ 大号健康状态灯（蓝=待命 绿=正常 橙=有限流/截断 红=出现失败），颜色与状态行联动 |
+| **今日用量** | 状态区实时显示当日请求数与 token 进出量（按模型聚合，SSE 流式与非流式双路径解析 usage 块），落盘 exe 同目录 `usage_stats.json`，跨天自动清零 |
 | **栅格化排版** | 统一间距层级；等宽字体展示地址/日志便于对齐 |
 
 ## 快速开始
@@ -135,6 +136,7 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 | `[吸收] 第 N 次截断…换道重试` | 吸收模式发现截断，正在换出口重试 |
 | `[吸收] … 取得完整回复` | 吸收模式成功，完整原文即将一次性交付 |
 | `[全局熔断] … 冻结惩罚并转入指数退避` | 判定上游/链路级故障，进入全局保护态（静默 60 秒自动解除） |
+| `[全局熔断] … 放行半开探针 / 探针成功，提前解除` | 静默满 30 秒后的单次立即重试及其结果：成功则不必等满 60 秒 |
 | `[SSE卫生] 丢弃 N 条无效行` | 直通流清洗掉了解析失败的 data 行 |
 | `[限流] … 暂停 …（上游声明/推断）` | 额度受限板凳；括号内为依据等级 |
 | `[池] 经出口 xxx 拉取成功` | 节点源直连失败后经出口兜底重试成功 |
@@ -215,14 +217,23 @@ https://proxy.amux.ai/api/proxies
 
 ## 构建
 
-官方发布一律走 GitHub Actions。本地仅作验证：
+官方发布一律走 GitHub Actions：自动嵌入图标与 GUI 清单、冒烟测试拦截残缺包，产物发布到 [exe-latest](https://github.com/krisxu23/opencode-free-autogate/releases/tag/exe-latest)（显式 `--draft=false`，保证访客与直链可见可下）。**日常使用请直接下载 Release，不要用本地裸 `go build` 的产物**——缺资源嵌入步骤的 exe 没有图标和 Common-Controls 清单，walk 界面会退化成旧版控件样式。
+
+本地仅作代码验证：
 
 ```sh
 go vet ./...
 go test -tags "with_quic,with_utls,with_gvisor" -count=1 ./...
-# GUI 版
+```
+
+本地如需出验证包，必须先跑 winres 资源嵌入再构建（与 CI 完全同款）：
+
+```sh
+$env:GOPROXY="https://goproxy.cn,direct"  # proxy.golang.org 直连超时时的备用源
+go run github.com/tc-hib/go-winres@v0.3.3 simply --icon app.ico --manifest gui --arch amd64
 go build -trimpath -tags "with_quic,with_utls,with_gvisor" \
   -ldflags "-s -w -H windowsgui -X main.uiMode=gui" -o opencode-free-autogate-gui.exe .
+Remove-Item *.syso  # 构建后清理资源文件，不入库
 ```
 
 无 cgo、单文件产物。
