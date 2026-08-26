@@ -30,6 +30,7 @@ var configManagedEnvKeys = []string{
 	"PROXY_ABSORB_ATTEMPTS",
 	"PROXY_DEEP_PROBE_INTERVAL",
 	"PROXY_PROBE_MODEL",
+	"PROXY_DEEP_CONCURRENCY",
 	"PROXY_LIST_URLS",
 	"PROXY_RACE",
 	"PROXY_RACE_WIDTH",
@@ -48,6 +49,7 @@ type uiSettings struct {
 	AbsorbStreaming  bool     `json:"absorb_streaming"`   // 吸收模式：网关内重试直到完整
 	AbsorbAttempts   int      `json:"absorb_attempts"`    // 吸收模式最大尝试次数
 	DeepProbeMinutes int      `json:"deep_probe_minutes"` // chat 深检间隔，分钟
+	DeepConcurrency  int      `json:"deep_concurrency"`   // chat 深检并发路数（1-128，默认 32）
 	ProbeModel       string   `json:"probe_model"`        // chat 深检模型；空 = 自动（big-pickle）
 	GatewayKey       string   `json:"gateway_key"`        // 展示用的默认 Key
 	PoolEnabled      bool     `json:"pool_enabled"`       // 在线节点池开关
@@ -68,6 +70,7 @@ func defaultSettings() uiSettings {
 		FirstByteSeconds: 30,
 		BudgetSeconds:    180,
 		DeepProbeMinutes: 60,
+		DeepConcurrency:  32,
 		GatewayKey:       defaultGatewayKey,
 		PoolEnabled:      false,
 		PoolInput:        "",
@@ -127,6 +130,10 @@ func (s uiSettings) normalized() uiSettings {
 	if s.DeepProbeMinutes > 1440 {
 		s.DeepProbeMinutes = 1440
 	}
+	// 深检并发：1-128 路；缺省/越界回落默认 32。
+	if s.DeepConcurrency <= 0 || s.DeepConcurrency > 128 {
+		s.DeepConcurrency = 32
+	}
 	if strings.TrimSpace(s.GatewayKey) == "" {
 		s.GatewayKey = defaultGatewayKey
 	}
@@ -182,6 +189,7 @@ func (s uiSettings) applyEnv() {
 	setIfEmpty("PROXY_ABSORB_STREAMING", fmt.Sprintf("%v", s.AbsorbStreaming))
 	setIfEmpty("PROXY_ABSORB_ATTEMPTS", fmt.Sprintf("%d", s.AbsorbAttempts))
 	setIfEmpty("PROXY_DEEP_PROBE_INTERVAL", fmt.Sprintf("%d", s.DeepProbeMinutes*60000))
+	setIfEmpty("PROXY_DEEP_CONCURRENCY", fmt.Sprintf("%d", s.DeepConcurrency))
 	if s.ProbeModel != "" {
 		setIfEmpty("PROXY_PROBE_MODEL", s.ProbeModel)
 	} // 空 = 不设置，config.go 回落 big-pickle

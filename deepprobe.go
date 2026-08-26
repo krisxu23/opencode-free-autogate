@@ -13,13 +13,14 @@ import (
 // 共享 IP 额度已枯竭"的假健康节点。
 //
 // 节奏（对应用户的两轮检测模型）：
-//   第一轮 = 常态 GET 探活（零配额），节点池全量，产出延迟样本；
-//   第二轮 = chat 深检（每 IP 一次迷你对话），覆盖第一轮的全部幸存者，
-//   数量随池子规模动态决定——活下来多少就检多少，不设固定上限。
+//
+//	第一轮 = 常态 GET 探活（零配额），节点池全量，产出延迟样本；
+//	第二轮 = chat 深检（每 IP 一次迷你对话），覆盖第一轮的全部幸存者，
+//	数量随池子规模动态决定——活下来多少就检多少，不设固定上限。
 //
 // 启动后槽位一就绪立刻跑首轮深检（用户第一句话之前假健康节点已被筛掉），
 // 之后按间隔 ±20% 抖动进入常规节奏。其余纪律：
-//   - 并发受 deepProbeConcurrency 封顶（8 路），既并行又不至于同一瞬间
+//   - 并发受深检并发封顶（默认 32 路，可配置），既并行又不至于同一瞬间
 //     几十个 IP 一起戳上游；
 //   - 打乱顺序，避免按固定次序形成可预测模式；
 //   - 重叠保护：上一轮没跑完就跳过本轮；
@@ -67,9 +68,20 @@ func (g *gateway) waitForCandidates(ctx context.Context) bool {
 	return false
 }
 
-// deepProbeConcurrency 是深检的并发封顶：50 个幸存者按 8 路并行分波消化，
-// 全轮耗时 ≈ ⌈N/8⌉ × 单次对话耗时，而不是 N 次串行累加。
-const deepProbeConcurrency = 8
+// deepConcurrency 是深检的并发封顶：幸存者按 N 路并行分波消化，
+// 全轮耗时 ≈ ⌈候选数/并发路数⌉ × 单次对话耗时，而不是串行累加。
+// 可经界面「深检并发」或环境变量 PROXY_DEEP_CONCURRENCY 调整（默认 32，
+// 上限 128——再高容易同一瞬间集中触发上游风控）。
+func (g *gateway) deepConcurrency() int {
+	n := g.cfg.deepConcurrency
+	if n <= 0 {
+		n = 32
+	}
+	if n > 128 {
+		n = 128
+	}
+	return n
+}
 
 func (g *gateway) runDeepProbePass(ctx context.Context) {
 	if !g.deepRunning.CompareAndSwap(false, true) {
@@ -101,7 +113,7 @@ func (g *gateway) runDeepProbePass(ctx context.Context) {
 	alive, dead := 0, 0
 	work := make(chan slot)
 	var wg sync.WaitGroup
-	for worker := 0; worker < deepProbeConcurrency; worker++ {
+	for worker := 0; worker < g.deepConcurrency(); worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
