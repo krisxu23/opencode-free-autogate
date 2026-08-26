@@ -50,6 +50,9 @@ type config struct {
 	deepProbeInterval    time.Duration // chat 深检间隔：识别"网络通但额度枯竭"的假健康节点
 	probeModel           string        // 深检固定模型：big-pickle 长期在售，其他名字会下线
 	cacheFields          bool          // 注入 prompt 缓存字段（延长上游提示缓存 TTL）
+	bodyFingerprint      bool          // 统一出站请求体顶层键序（对齐原生 CLI 指纹）
+	sseHygiene           bool          // SSE 分块卫生：丢弃无效数据行/删空 tool_calls/补缺失字段
+	echoDebug            bool          // 记录上游回传响应头（脱敏），回显出处守卫取证用
 	tlsInsecure          bool          // INSECURE_TLS=1：上游连接跳过证书校验（自签镜像/代理环境）
 	transportDialTimeout time.Duration // 共享连接池统一的拨号/TLS 握手超时（随首字节超时初始化）
 }
@@ -106,6 +109,9 @@ func loadConfig(project projectSpec) config {
 		deepProbeInterval:    envMilliseconds("PROXY_DEEP_PROBE_INTERVAL", 3600000),
 		probeModel:           envString("PROXY_PROBE_MODEL", "big-pickle"),
 		cacheFields:          envDefaultOn("PROXY_CACHE_FIELDS"),
+		bodyFingerprint:      envDefaultOn("PROXY_BODY_FINGERPRINT"),
+		sseHygiene:           envDefaultOn("PROXY_SSE_HYGIENE"),
+		echoDebug:            envBool("PROXY_ECHO_DEBUG", false),
 		tlsInsecure:          tlsInsecure,
 		transportDialTimeout: firstByte,
 	}

@@ -314,6 +314,16 @@ func (a *app) handlePost(w http.ResponseWriter, r *http.Request, path string, de
 			body = out
 		}
 	}
+	// 出站指纹整形：统一按原生客户端的字段构造序重排顶层键。卫生改写过的
+	// 体是 Go map 的字母序、未改写的保留客户端原序——同一网关两种指纹本身
+	// 就是可识别特征。JSON 键序无语义，纯整形零风险（见 bodyorder.go）。
+	if payload != nil && a.gateway.cfg.bodyFingerprint {
+		if order := pickBodyOrder(path); len(order) > 0 {
+			if out, ok := marshalOrderedBody(payload, order); ok {
+				body = out
+			}
+		}
+	}
 	headers := a.collectHeaders(r.Header)
 	applyRequestIDs(headers, ids)
 	if strings.HasPrefix(path, "/v1/messages") {
@@ -432,7 +442,7 @@ func (g *sseGuard) Committed() bool {
 
 // writeCommittedStream 处理已提前提交 SSE 头的响应：赢家的流直接透传；
 // 其余情形（错误或非流式兜底）转为 SSE 错误事件，让客户端拿到明确原因。
-func writeCommittedStream(w http.ResponseWriter, r *http.Request, response *gatewayResponse, streamIdle time.Duration, observe func(truncated bool)) {
+func writeCommittedStream(w http.ResponseWriter, r *http.Request, response *gatewayResponse, streamIdle time.Duration, observe func(truncated bool), hyg *sseSanitizer) {
 	if response.live == nil && response.status >= 200 && response.status < 300 && len(response.body) > 0 {
 		// 吸收模式的成品：已验证完整的整段 SSE 原文一次性交付。
 		_, _ = w.Write(response.body)
@@ -445,7 +455,7 @@ func writeCommittedStream(w http.ResponseWriter, r *http.Request, response *gate
 		return
 	}
 	if response.live != nil {
-		streamResponse(w, r.Context(), response.live, streamIdle, observe)
+		streamResponse(w, r.Context(), response.live, streamIdle, observe, hyg)
 		return
 	}
 	message := "上游请求失败"
@@ -580,12 +590,20 @@ func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace
 			a.gateway.exits.observeSuccess(trace.finalProxy)
 		}
 	}
+	var hyg *sseSanitizer
+	if a.gateway.cfg.sseHygiene && response != nil && response.live != nil {
+		hyg = newSSESanitizer()
+	}
+	// 回显取证：胜者响应头脱敏落日志，判断上游是否下发 turn-scoped 状态头。
+	if a.gateway.cfg.echoDebug && response != nil {
+		logEchoHeaders(r.URL.Path, response.status, response.header)
+	}
 	if guard.Committed() {
 		// 响应头已提前提交，状态码无法再改变：赢家流透传，其余转为 SSE 错误事件。
-		writeCommittedStream(w, r, response, a.gateway.cfg.streamIdle, observe)
+		writeCommittedStream(w, r, response, a.gateway.cfg.streamIdle, observe, hyg)
 		return
 	}
-	writeGatewayResponse(w, r, response, a.gateway.cfg.streamIdle, observe)
+	writeGatewayResponse(w, r, response, a.gateway.cfg.streamIdle, observe, hyg)
 }
 
 func (a *app) logCompletion(r *http.Request, trace *requestTrace) {
@@ -607,7 +625,7 @@ func (a *app) logCompletion(r *http.Request, trace *requestTrace) {
 		result, r.Method, r.URL.Path, status, retries, len(trace.proxies), time.Since(trace.start).Milliseconds(), proxy)
 }
 
-func writeGatewayResponse(w http.ResponseWriter, r *http.Request, response *gatewayResponse, streamIdle time.Duration, observe func(truncated bool)) {
+func writeGatewayResponse(w http.ResponseWriter, r *http.Request, response *gatewayResponse, streamIdle time.Duration, observe func(truncated bool), hyg *sseSanitizer) {
 	for key, values := range response.header {
 		for _, value := range values {
 			w.Header().Add(key, value)
@@ -630,7 +648,7 @@ func writeGatewayResponse(w http.ResponseWriter, r *http.Request, response *gate
 		_, _ = w.Write(response.body)
 		return
 	}
-	streamResponse(w, r.Context(), response.live, streamIdle, observe)
+	streamResponse(w, r.Context(), response.live, streamIdle, observe, hyg)
 }
 
 // streamTerminals 是判定流完整结束的标记：见到任一个即认为上游正常收尾。
@@ -645,7 +663,7 @@ var streamTerminals = [][]byte{
 	[]byte("response.incomplete"),
 }
 
-func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveResponse, idle time.Duration, observe func(truncated bool)) {
+func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveResponse, idle time.Duration, observe func(truncated bool), hyg *sseSanitizer) {
 	defer live.Close()
 	flusher, _ := w.(http.Flusher)
 	if flusher != nil {
@@ -653,6 +671,7 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 	}
 	buffer := make([]byte, 32<<10)
 	// 终止标记扫描：窗口保留上次尾部，防止标记被拆在两次读取里。
+	// 扫描对象是清洗后待转发的字节——客户端看到什么，就以什么为准记账。
 	terminalSeen := false
 	var window []byte
 	scan := func(chunk []byte) {
@@ -668,6 +687,32 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 		}
 		if len(window) > 64 {
 			window = append(window[:0], window[len(window)-64:]...)
+		}
+	}
+	writeOut := func(chunk []byte) bool {
+		if len(chunk) == 0 {
+			return true
+		}
+		scan(chunk)
+		if _, err := w.Write(chunk); err != nil {
+			return false
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return true
+	}
+	// 流结束时冲洗残留半行并汇报卫生统计；必须在 report() 之前，
+	// 让终止标记判定看到完整的客户端可见字节。
+	flushTail := func() {
+		if hyg == nil {
+			return
+		}
+		if tail := hyg.flush(); len(tail) > 0 {
+			writeOut(tail)
+		}
+		if hyg.dropped > 0 {
+			log.Printf("[SSE卫生] 本流丢弃 %d 行无效数据", hyg.dropped)
 		}
 	}
 	// report 只在上游侧结束时调用；客户端主动断开（写失败/请求取消）
@@ -689,16 +734,17 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 		n, err := live.response.Body.Read(buffer)
 		stopped := timer.Stop()
 		if n > 0 {
-			scan(buffer[:n])
-			if _, writeErr := w.Write(buffer[:n]); writeErr != nil {
-				return
+			out := buffer[:n]
+			if hyg != nil {
+				out = hyg.feed(out)
 			}
-			if flusher != nil {
-				flusher.Flush()
+			if !writeOut(out) {
+				return
 			}
 		}
 		if !stopped {
 			log.Printf("[流] %s 内无数据，已关闭连接", idle)
+			flushTail()
 			report()
 			return
 		}
@@ -706,6 +752,7 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 			if !errors.Is(err, io.EOF) && ctx.Err() == nil {
 				log.Printf("[流] upstream stream ended: %v", err)
 			}
+			flushTail()
 			if ctx.Err() == nil {
 				report()
 			}

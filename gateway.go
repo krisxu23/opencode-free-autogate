@@ -145,6 +145,8 @@ type gateway struct {
 
 	exits *exitTracker // 出口近期表现记账：评分排序 + 坐板凳
 
+	outage outageBreaker // 全局故障熔断：跨出口/镜像的聚集失败判定（见 outage.go）
+
 	stickyMu     sync.Mutex
 	sticky       map[string]stickyEntry // 会话 → 上次胜出出口（prompt 缓存友好）
 	stickyWrites int                    // 插入计数：周期性强制清理过期项（见 stickyRemember）
@@ -1180,9 +1182,12 @@ func (g *gateway) dispatch(ctx context.Context, request upstreamRequest, trace *
 		trace.upstream = shortUpstream(current.upstream)
 		response, err := g.dispatchOnce(ctx, current, trace)
 		if err != nil {
-			g.noteUpstreamResult(current.upstream, false)
 			if isTerminalContextError(ctx, err) {
+				// 请求取消/预算到期不是镜像的错：先于记账判断，防止误冷却。
 				return nil, err
+			}
+			if g.punishExit("", shortUpstream(current.upstream)) {
+				g.noteUpstreamResult(current.upstream, false)
 			}
 			lastErr = err
 			continue
@@ -1575,7 +1580,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 					stopHedge()
 					return nil, res.err
 				}
-				if !res.isDirect {
+				if !res.isDirect && g.punishExit(res.addr, shortUpstream(res.upstream)) {
 					g.noteCustomResult(res.addr, false)
 					if errors.Is(res.err, errStreamTruncated) {
 						g.exits.observeTruncation(res.addr)
@@ -1665,8 +1670,35 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 	return nil, errNoProxy
 }
 
+// punishExit 判定一次真实失败是否应记到具体出口/镜像头上。
+// 全局熔断期间只留证据不惩罚——上游级故障不该由健康出口连坐买单。
+func (g *gateway) punishExit(exit, mirror string) bool {
+	g.outage.record(exit, mirror)
+	return !g.outage.Tripped()
+}
+
+// absorbBackoff 吸收模式重试间隔：平时固定短间隔快速换道；全局熔断期间
+// 指数退避，停止对故障中的上游风暴式轰炸。
+func (g *gateway) absorbBackoff(attempt int) time.Duration {
+	if !g.outage.Tripped() {
+		return absorbRetryDelay
+	}
+	shift := attempt - 1
+	if shift > 5 {
+		shift = 5
+	}
+	delay := absorbRetryDelay << uint(shift)
+	if delay <= 0 || delay > 10*time.Second {
+		return 10 * time.Second
+	}
+	return delay
+}
+
 // noteStreamTruncation 记一次流中途夭折：出口记截断降权，所属镜像按失败记账。
 func (g *gateway) noteStreamTruncation(addr, upstream string) {
+	if !g.punishExit(addr, shortUpstream(upstream)) {
+		return // 全局熔断期间只留证据不降权
+	}
 	g.lastTruncation.Store(time.Now().UnixNano())
 	if trackableExit(addr) {
 		g.exits.observeTruncation(addr)

@@ -51,6 +51,14 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 	}
 	overall := time.Now().Add(absorbTotalBudget)
 	var fallback *gatewayResponse
+	stormLogged := false
+	pauseAbsorb := func(attempt int) {
+		if g.outage.Tripped() && !stormLogged {
+			stormLogged = true
+			log.Printf("[吸收] 全局熔断生效，切换指数退避")
+		}
+		time.Sleep(g.absorbBackoff(attempt))
+	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -67,7 +75,7 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 				return nil, ctx.Err()
 			}
 			log.Printf("[吸收] 第 %d/%d 次未取得响应: %v", attempt, maxAttempts, err)
-			time.Sleep(absorbRetryDelay)
+			pauseAbsorb(attempt)
 			continue
 		}
 		if resp.live == nil {
@@ -78,7 +86,7 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 					fallback = resp // 与竞速同约定：全灭时交出的最后兜底
 				}
 				log.Printf("[吸收] 第 %d/%d 次可重试错误 status=%d，换道", attempt, maxAttempts, resp.status)
-				time.Sleep(absorbRetryDelay)
+				pauseAbsorb(attempt)
 				continue
 			}
 			return resp, nil
@@ -89,8 +97,13 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 		if rerr != nil {
 			g.noteStreamTruncation(trace.finalProxy, trace.upstream)
 			log.Printf("[吸收] 第 %d/%d 次读取失败（出口:%s）: %v", attempt, maxAttempts, trace.finalProxy, rerr)
-			time.Sleep(absorbRetryDelay)
+			pauseAbsorb(attempt)
 			continue
+		}
+		// 分块卫生先行：完整性判定与最终转发共用清洗后的字节，
+		// 保证"客户端看到什么，就以什么为准判断完整"。
+		if g.cfg.sseHygiene {
+			data = sanitizeSSEBytes(data)
 		}
 		if !streamComplete(data) {
 			g.noteStreamTruncation(trace.finalProxy, trace.upstream)
