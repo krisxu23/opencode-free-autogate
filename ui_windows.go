@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lxn/walk"
@@ -40,6 +41,8 @@ type gatewayUI struct {
 	settings uiSettings
 	path     string
 
+	banner        *walk.CustomWidget // 顶部自绘信息卡（应用名/运行时长/健康状态灯）
+	start         time.Time          // 界面启动时刻，用于运行时长显示
 	statusLabel   *walk.Label
 	headline      *walk.Label
 	headlineText  string
@@ -75,6 +78,7 @@ var outboundChoices = []string{"走代理（失败自动直连兜底）", "仅�
 // runGatewayUI 创建主窗口并进入消息循环；返回时代表窗口已关闭。
 func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func()) error {
 	ui := &gatewayUI{app: handler, settings: settings, path: path, shutdownOnce: shutdown}
+	ui.start = time.Now()
 
 	outboundIndex := 1
 	if settings.Outbound == outboundProxy {
@@ -95,8 +99,15 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 		Font:     uiFont,
 		MinSize:  dcl.Size{Width: 760, Height: 460},
 		Size:     dcl.Size{Width: 820, Height: 560},
-		Layout:   dcl.VBox{Spacing: 8, Margins: dcl.Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}},
+		Layout:   dcl.VBox{Spacing: 10, Margins: dcl.Margins{Left: 14, Top: 12, Right: 14, Bottom: 12}},
 		Children: []dcl.Widget{
+			dcl.CustomWidget{
+				AssignTo:  &ui.banner,
+				MinSize:   dcl.Size{Height: 66},
+				MaxSize:   dcl.Size{Height: 66},
+				PaintMode: dcl.PaintBuffered,
+				Paint:     ui.paintBanner,
+			},
 			dcl.TabWidget{
 				Font: uiFont,
 				Pages: []dcl.TabPage{
@@ -300,6 +311,9 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 		return err
 	}
 
+	// 窗口 chrome 现代化：深色标题栏跟随系统；Win11 上标题栏染色 + Mica（静默降级）。
+	applyWindowTheme(ui.window)
+
 	ui.window.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
 		if ui.shutdownOnce != nil {
 			ui.shutdownOnce()
@@ -378,6 +392,89 @@ func (ui *gatewayUI) refreshHeadline() {
 	if title := "opencode-free-autogate ● 运行中"; title != ui.titleText {
 		ui.titleText = title
 		_ = ui.window.SetTitle(title)
+	}
+	// 横幅卡每拍重绘：运行时长秒级跳动，状态灯/短语随 headlineColor 联动。
+	if ui.banner != nil {
+		ui.banner.Invalidate()
+	}
+}
+
+// 横幅自绘字体：进程级复用，GDI 资源随进程退出回收。
+var (
+	bannerTitleFont *walk.Font
+	bannerSubFont   *walk.Font
+	bannerFontOnce  sync.Once
+)
+
+func ensureBannerFonts() {
+	bannerFontOnce.Do(func() {
+		bannerTitleFont, _ = walk.NewFont("Microsoft YaHei UI", 12, walk.FontBold)
+		bannerSubFont, _ = walk.NewFont("Microsoft YaHei UI", 8, 0)
+	})
+}
+
+// paintBanner 自绘顶部信息卡：深色圆角底 + 应用名/运行时长 + 大号健康状态灯。
+func (ui *gatewayUI) paintBanner(canvas *walk.Canvas, bounds walk.Rectangle) error {
+	ensureBannerFonts()
+	bg, err := walk.NewSolidColorBrush(walk.RGB(24, 26, 32))
+	if err != nil {
+		return err
+	}
+	defer bg.Dispose()
+	if err := canvas.FillRoundedRectangle(bg, bounds, walk.Size{Width: 12, Height: 12}); err != nil {
+		return err
+	}
+	pen, err := walk.NewCosmeticPen(walk.PenSolid, walk.RGB(56, 60, 72))
+	if err != nil {
+		return err
+	}
+	defer pen.Dispose()
+	if err := canvas.DrawRoundedRectangle(pen, bounds, walk.Size{Width: 12, Height: 12}); err != nil {
+		return err
+	}
+
+	pad, w, h := 16, bounds.Width, bounds.Height
+	if err := canvas.DrawText("opencode-free-autogate", bannerTitleFont, walk.RGB(236, 239, 246),
+		walk.Rectangle{X: bounds.X + pad, Y: bounds.Y + 9, Width: w - 330, Height: 26}, 0); err != nil {
+		return err
+	}
+	sub := fmt.Sprintf("本地免费网关 · 已运行 %s · 上游 opencode.ai/zen",
+		time.Since(ui.start).Round(time.Second))
+	if err := canvas.DrawText(sub, bannerSubFont, walk.RGB(150, 158, 172),
+		walk.Rectangle{X: bounds.X + pad, Y: bounds.Y + 37, Width: w - 330, Height: 20}, 0); err != nil {
+		return err
+	}
+
+	light := ui.headlineColor
+	if light == 0 {
+		light = colorIdle // 首帧尚未刷新状态时兜底
+	}
+	textW := 132
+	dotRect := walk.Rectangle{X: bounds.X + w - pad - textW - 26, Y: bounds.Y + h/2 - 8, Width: 16, Height: 16}
+	dotBrush, err := walk.NewSolidColorBrush(light)
+	if err != nil {
+		return err
+	}
+	defer dotBrush.Dispose()
+	if err := canvas.FillEllipse(dotBrush, dotRect); err != nil {
+		return err
+	}
+	return canvas.DrawText(statusPhrase(light), bannerTitleFont, light,
+		walk.Rectangle{X: bounds.X + w - pad - textW, Y: bounds.Y + h/2 - 13, Width: textW, Height: 26},
+		walk.TextRight)
+}
+
+// statusPhrase 把健康四色映射成横幅右侧的短句。
+func statusPhrase(c walk.Color) string {
+	switch c {
+	case colorOK:
+		return "运行正常"
+	case colorWarn:
+		return "有限流/截断"
+	case colorError:
+		return "出现失败"
+	default:
+		return "待命"
 	}
 }
 
