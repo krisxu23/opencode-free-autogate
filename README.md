@@ -1,12 +1,12 @@
 # opencode-free-autogate
 
-Go 实现的 **OpenCode 免费模型本地网关**：把 opencode.ai 免费模型包装成 OpenAI / Anthropic / Codex 兼容接口，Windows 单文件运行。
+Go 实现的 **OpenCode 免费模型本地网关**：把 opencode.ai 免费模型包装成 OpenAI / Anthropic / Codex 兼容接口，Windows 单文件运行，原生现代化界面。
 
 ```
-opencode 客户端
+opencode 客户端（DSH / ZCode / opencode CLI…）
     ↓  http://localhost:13339/openai/v1
 opencode-free-autogate.exe
-    ↓  两轮健康检测 ＋ 对冲竞速 ＋ 会话粘性 ＋ 多镜像轮转
+    ↓  两轮健康检测 ＋ 对冲竞速 ＋ 会话粘性 ＋ 吸收模式 ＋ 全局熔断
 opencode.ai/zen ＋ 3 个公共 CDN 镜像
 ```
 
@@ -24,6 +24,7 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 
 - 第一轮证明"网络通"，第二轮穿透上游额度门证明"配额没死"——只过第一轮的是假健康。两轮数量都随池子规模动态决定，不设固定上限。**所有节点类型**（socks5/vless/vmess/ss/trojan/hysteria2）统一走两轮检测，标准一致。
 - **对话时**：同会话优先复用上次胜出的出口（粘性，吃上游提示缓存）；首发未决则按延迟排序对冲竞速——多路同时出发，最快吐数据的赢，输家立即取消且不记惩罚；全军覆没落直连兜底。
+- **流式请求双保险**：出口中途夭折 → **吸收模式**在网关内换道重试直到拿到完整回复，客户端只见保活心跳；上游整体抖动 → **全局熔断器**识别风暴、冻结惩罚转指数退避，池子不自相残杀。
 - **限流记账分级**：上游亲口给的恢复时间（Retry-After / 响应体）＝权威板凳，到点才回归；自己推断的（如 FreeUsageLimitError 默认 2 小时）允许每小时深检提前推翻。计费类错误（402）直接坐 24 小时。
 - **板凳到期不踩踏**：刚恢复的出口进入 60 秒观察窗，期间只放一路在途，防止对冲并发把刚回血的额度瞬间压爆。
 
@@ -37,6 +38,7 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 | **会话粘性** | 同会话钉住上次胜出的出口（30 分钟 TTL），上游提示缓存命中率实测 99.8% vs 竞速轮换 0%；钉住失败自动照常升级竞速，可用性不受影响 |
 | **缓存字段注入** | 自动附加 `prompt_cache_retention=24h` ＋ `cache_control`（GLM/Zhipu 系自动跳过），延长上游提示缓存 TTL |
 | **SSE 保活** | 竞速超过 5 秒未决时提前提交 SSE 响应头并发心跳注释行，客户端不会误判断线 |
+| **吸收模式** | 流式回复在网关内完整接收并校验，中途截断自动换道重试（默认最多 10 次），客户端全程只看保活心跳；拿到验证完整的原文后一次性交付 |
 
 ### 健康管理
 
@@ -45,7 +47,14 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 | **两轮检测** | GET 全量探活（零配额）＋ chat 全量深检（动态数量、8 路并行），启动即跑、每小时复检 ±20% 抖动 |
 | **空流拦截** | 返回 200 却无数据即断的流在网关内被拦下换出口；中途夭折的出口记账降权 |
 | **板凳阶梯** | 连续失败 30s→1m→2m→5m 逐级暂停；额度枯竭按上游声明或推断长停；探活通过/竞速胜出即回归 |
-| **唤醒恢复** | 检测 Windows 休眠恢复（5 秒心跳），清死连接池＋补槽，睡眠后第一波请求不撞陈旧套接字 |
+
+### 韧性与熔断
+
+| 功能 | 说明 |
+|---|---|
+| **全局熔断器** | 45 秒滑动窗口内 ≥6 次失败横跨 ≥4 个出口且 ≥2 个镜像 → 判定上游/链路级故障：冻结一切出口惩罚、吸收模式转指数退避（300ms→9.6s 封顶）、静默 60 秒自动解除——源站抖动不再引发全池雪崩 |
+| **失败归因修正** | ctx 取消/预算到期的竞速腿不再被误记为镜像失败；只有真实上游错误才参与记账与熔断判定 |
+| **唤醒恢复** | 检测 Windows 休眠恢复（5 秒心跳），清死连接池＋补槽，睡眠后第一波请求不撞陈旧套接字；与熔断器互补——一个管"节点死了"，一个管"大家都被冤枉了" |
 
 ### 协议与防护
 
@@ -53,9 +62,12 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 |---|---|
 | **协议兼容** | OpenAI / Anthropic / Codex 三种路由，客户端零改造接入 |
 | **请求体卫生** | 自动剔除缺失 function.name 的工具条目、tools 超 128 截断、剥离 client_metadata——畸形请求体不再烧掉出口尝试 |
+| **请求指纹整形** | 出站 body 顶层键序统一对齐原生 CLI 构造序（chat 形态取自 @ai-sdk/openai-compatible 源码、responses 形态取自 OmniRoute 抓包），消灭"改写过=字母序、没改过=原序"的双指纹特征；Anthropic `/v1/messages` 无可靠依据，刻意不整形 |
+| **SSE 分块卫生** | 直通流与吸收流双路径：丢弃解析失败的 `data:` 行（上游夹带的错误页不再喂给客户端）、删除空 `tool_calls:[]`、补缺失的 object/created 字段；>1MB 整行透传、截断维持静默干净关闭语义 |
 | **思考模型兼容** | deepseek/kimi/minimax 系模型多轮对话自动补 `reasoning_content` 占位符，防止 OpenAI 格式客户端缺字段导致上游 400 |
 | **管家流量拦截** | 客户端的配额探测类请求（极保守匹配＋日志可见）本地直接应答，不消耗上游额度 |
 | **UA 版本同步** | 每天从 npm 拉官方 CLI 最新版本号，固定版本号不会日久成为识别特征 |
+| **回显取证**（默认关） | `PROXY_ECHO_DEBUG=1` 时把胜者响应头脱敏落日志（auth/token/key 类值替换为 `<已脱敏 len=N>`），用于排查上游是否下发 turn-scoped 状态头 |
 
 ### 节点接入
 
@@ -67,6 +79,14 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 | **模型清单** | 启动拉取免费模型长期使用；短名自动重定向 `-free`；models.dev 每日校准仅作下线预警，不影响深检模型选择 |
 
 程序不内置任何节点或订阅；不收集任何数据。
+
+### 界面
+
+| 特性 | 说明 |
+|---|---|
+| **深色标题栏** | 跟随系统暗色开关（Win10 20H1+）；Win11 额外标题栏染色＋Mica 材质，老系统静默降级 |
+| **自绘信息卡** | 顶部横幅：应用名 ＋ 运行时长秒级跳动 ＋ 大号健康状态灯（蓝=待命 绿=正常 橙=有限流/截断 红=出现失败），颜色与状态行联动 |
+| **栅格化排版** | 统一间距层级；等宽字体展示地址/日志便于对齐 |
 
 ## 快速开始
 
@@ -112,6 +132,10 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 | `[深检] 本轮 N 个出口：通过 X / 失败 Y` | 深检战报；失败的已坐板凳 |
 | `[粘性] ses_xxx 钉住 …` | 该会话后续请求优先走同一出口 |
 | `[竞速] 胜出: … 已发 N 路（含直连）` | 本笔请求的交付出口与并发路数 |
+| `[吸收] 第 N 次截断…换道重试` | 吸收模式发现截断，正在换出口重试 |
+| `[吸收] … 取得完整回复` | 吸收模式成功，完整原文即将一次性交付 |
+| `[全局熔断] … 冻结惩罚并转入指数退避` | 判定上游/链路级故障，进入全局保护态（静默 60 秒自动解除） |
+| `[SSE卫生] 丢弃 N 条无效行` | 直通流清洗掉了解析失败的 data 行 |
 | `[限流] … 暂停 …（上游声明/推断）` | 额度受限板凳；括号内为依据等级 |
 | `[池] 经出口 xxx 拉取成功` | 节点源直连失败后经出口兜底重试成功 |
 | `[池] 拉取失败 … / 出口兜底也失败` | 源直连失败，正在/已用出口兜底重试 |
@@ -180,47 +204,25 @@ https://proxy.amux.ai/api/proxies
 | `PROXY_RACE` / `PROXY_RACE_WIDTH` | `1` / `8` | 对冲竞速开关 / 自动节点最大参与路数 |
 | `PROXY_HEDGE_DELAY` | `1500` | 对冲竞速：首批无首字节后加发下一批的延迟（毫秒） |
 | `PROXY_STICKY` | `1` | 会话粘性开关 |
+| `PROXY_ABSORB_STREAMING` | `false` | 吸收模式开关（GUI 勾选框写入 config.json `absorb_streaming`） |
+| `PROXY_ABSORB_ATTEMPTS` | `10` | 吸收模式最大换道尝试次数（config.json `absorb_attempts`） |
+| `PROXY_BODY_FINGERPRINT` | `1` | 出站 body 键序指纹整形开关 |
+| `PROXY_SSE_HYGIENE` | `1` | SSE 分块卫生开关（丢无效行/删空 tool_calls/补缺失字段） |
+| `PROXY_ECHO_DEBUG` | `0` | 胜者响应头脱敏回显日志（取证用，日常不开） |
 | `PROXY_DEEP_PROBE_INTERVAL` | `3600000` | chat 深检间隔（毫秒） |
 | `PROXY_PROBE_MODEL` | `big-pickle` | 深检模型：GUI 下拉可选（实时上游模型列表），环境变量优先；长期在售型号最稳 |
 | `PROXY_CACHE_FIELDS` | `1` | prompt 缓存字段注入开关 |
-| `PROXY_LOCAL_MOCKS` | `1` | 管家流量本地应答开关 |
-| `PROXY_FIRST_BYTE_TIMEOUT` | `30000` | 流式首字节超时（毫秒） |
-| `HARD_TIMEOUT` | `180000` | 流式总预算（毫秒） |
-| `STREAM_IDLE_TIMEOUT` | `300000` | 流式开始后上游静默多久算断流（毫秒），长思考模型可调大 |
-| `NON_STREAM_TIMEOUT` | `300000` | 非流式请求总预算（毫秒） |
-| `PROXY_ORDER` | 空 | 回退顺序；由 config.json 自动设为 `custom` 或 `direct` |
-| `INSECURE_TLS` | `0` | 置 `1` 跳过上游 TLS 证书校验（自签证书的镜像/代理环境用） |
-
-> 默认仅监听本机（127.0.0.1）。上游证书默认严格校验，仅自签证书环境需要 `INSECURE_TLS=1`。
-> 「保存并重启」会剔除上表由 config.json 派生的变量后重启进程；`LISTEN_ADDR`、`INSECURE_TLS` 等显式设置的环境变量不受影响。
 
 ## 构建
 
-推送后 GitHub Actions 自动构建并发布到 [exe-latest](https://github.com/krisxu23/opencode-free-autogate/releases/tag/exe-latest)：`-gui.exe`（图形版）/ `-console.exe`（排障版）。本地构建需 Go 1.24+：
+官方发布一律走 GitHub Actions。本地仅作验证：
 
-```bash
-go test ./...
-go build -trimpath -ldflags "-s -w -H windowsgui" -o opencode-free-autogate-gui.exe .   # GUI 版先用 go-winres 嵌图标
-go build -trimpath -ldflags "-s -w" -o opencode-free-autogate-console.exe .
+```sh
+go vet ./...
+go test -tags "with_quic,with_utls,with_gvisor" -count=1 ./...
+# GUI 版
+go build -trimpath -tags "with_quic,with_utls,with_gvisor" \
+  -ldflags "-s -w -H windowsgui -X main.uiMode=gui" -o opencode-free-autogate-gui.exe .
 ```
 
-## 免责声明
-
-本项目仅为个人学习研究用途的本地网络工具，不提供任何节点资源；使用公共免费代理产生的风险（稳定性、隐私、第三方节点可信度）自行评估。请遵守 opencode.ai 服务条款与当地法律法规。
-
-## 致谢
-
-本项目的诞生与演进直接受益于以下开源项目，一并致谢：
-
-| 项目 | 贡献 |
-|---|---|
-| [GuJi08233/opencode-free-gate](https://github.com/GuJi08233/opencode-free-gate) | 本项目的直接前身——opencode 客户端指纹模拟、会话-代理亲和性与整体骨架源自这里（仓库血脉更早上溯至 pandas886 的初始化提交） |
-| [kirafishy/OCFreeRelay](https://github.com/kirafishy/OCFreeRelay) | 429 分级封禁设计（FreeUsageLimitError 长停 / Retry-After 权威板凳 / 普通限流不坐板凳）与 reasoning_content 注入策略的原始设计 |
-| [decolua/9router](https://github.com/decolua/9router) | opencode 指纹头规范（X-Opencode-Session/Request/Project）与 deepseek/kimi 系 reasoning_content 注入的实践参考 |
-| [diegosouzapw/OmniRoute](https://github.com/diegosouzapw/OmniRoute) | 免费代理源体系设计（1proxy 质量分 / IPLocate GitHub 列表 / Proxifly 匿名度过滤）与 IP 出口可见性探查 |
-| [tashfeenahmed/freellmapi](https://github.com/tashfeenahmed/freellmapi) | 健康检查的节奏纪律（抖动间隔、乱序采样、最小间距防风控）参考其设计 |
-| [opencode2api 系列](https://github.com/search?q=opencode2api&type=repositories) | 在同一上游生产环境验证了 `prompt_cache_retention` 等缓存字段与粘性会话的真实收益 |
-| [SagerNet/sing-box](https://github.com/SagerNet/sing-box) | 内嵌核心：vless / vmess / trojan / ss / hysteria2 / tuic 分享链接解析与本地多协议出口全部由它驱动 |
-| [lxn/walk](https://github.com/lxn/walk) | Windows 原生图形界面库 |
-| [tc-hib/go-winres](https://github.com/tc-hib/go-winres) | 构建期为 exe 嵌入图标与应用清单 |
-| [models.dev](https://models.dev) | 免费模型目录数据源（深检模型下线预警哨兵） |
+无 cgo、单文件产物。
