@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/lxn/walk"
 	dcl "github.com/lxn/walk/declarative"
@@ -547,6 +548,12 @@ func (ui *gatewayUI) refreshPoolLive() {
 	ui.poolLive.SetText(text)
 }
 
+// Win32 edit control messages for saving/restoring scroll position.
+const (
+	emGetScrollPos = 0x04DD
+	emSetScrollPos = 0x04DE
+)
+
 func (ui *gatewayUI) pumpLogs() {
 	lines, cursor := uiLog.Since(ui.logCursor)
 	if len(lines) == 0 {
@@ -566,7 +573,12 @@ func (ui *gatewayUI) pumpLogs() {
 	}
 	hwnd := ui.logEdit.Handle()
 	win.SendMessage(hwnd, win.WM_SETREDRAW, 0, 0)
+	// 保存滚动位置：用户向下拖动查看旧日志时，SetText 会重置滚动条到顶部，
+	// 必须在替换前后保存/恢复，否则滚动条被强制弹回。
+	var scrollPos win.POINT
+	win.SendMessage(hwnd, emGetScrollPos, 0, uintptr(unsafe.Pointer(&scrollPos)))
 	ui.logEdit.SetText(ui.shownText)
+	win.SendMessage(hwnd, emSetScrollPos, 0, uintptr(unsafe.Pointer(&scrollPos)))
 	win.SendMessage(hwnd, win.WM_SETREDRAW, 1, 0)
 	win.UpdateWindow(hwnd)
 }
