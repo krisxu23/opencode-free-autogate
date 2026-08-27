@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -548,7 +549,7 @@ func (ui *gatewayUI) refreshPoolLive() {
 	ui.poolLive.SetText(text)
 }
 
-// Win32 edit control messages for saving/restoring scroll position.
+// Win32 edit control messages for scroll-preserving text update.
 const (
 	emGetScrollPos = 0x04DD
 	emSetScrollPos = 0x04DE
@@ -572,16 +573,24 @@ func (ui *gatewayUI) pumpLogs() {
 		ui.shownText = ui.shownText[:50000]
 	}
 	hwnd := ui.logEdit.Handle()
-	// 先保存滚动位置（在 WM_SETREDRAW=OFF 之前获取，确保拿到用户真实位置）。
+	// 检测用户是否在顶部（用于判断是否自动跟随新日志）。
 	var scrollPos win.POINT
 	win.SendMessage(hwnd, emGetScrollPos, 0, uintptr(unsafe.Pointer(&scrollPos)))
+	atTop := scrollPos.Y <= 0
+
+	// 核心：不用 SetText(WM_SETTEXT)——它无条件重置滚动条到顶部。
+	// 改用 EM_SETSEL + EM_REPLACESEL：选中全部文本并替换，但不触发滚动重置。
 	win.SendMessage(hwnd, win.WM_SETREDRAW, 0, 0)
-	ui.logEdit.SetText(ui.shownText)
-	// SetText(WM_SETTEXT) 会重置滚动条到顶部。必须先恢复重绘再设置滚动位置，
-	// 否则 EM_SETSCROLLPOS 在 WM_SETREDRAW=OFF 时不生效。
+	win.SendMessage(hwnd, win.EM_SETSEL, 0, uintptr(^uint(0))) // 选中全部
+	win.SendMessage(hwnd, win.EM_REPLACESEL, 0,
+		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(ui.shownText))))
 	win.SendMessage(hwnd, win.WM_SETREDRAW, 1, 0)
 	win.UpdateWindow(hwnd)
-	win.SendMessage(hwnd, emSetScrollPos, 0, uintptr(unsafe.Pointer(&scrollPos)))
+
+	// 如果用户之前在顶部，自动跟随到新内容；否则保持原位不动。
+	if atTop {
+		win.SendMessage(hwnd, win.EM_SCROLLCARET, 0, 0)
+	}
 }
 
 func (ui *gatewayUI) refreshStatus() {
