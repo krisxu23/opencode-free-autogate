@@ -839,7 +839,7 @@ func (g *gateway) prewarmExit(s slot) {
 	// 目标用 /healthz 或根路径均可——关键是触发 transport 建立底层连接。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, g.cfg.upstreamBase+"/v1/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, g.cfg.project.upstream+"/v1/models", nil)
 	if err != nil {
 		return
 	}
