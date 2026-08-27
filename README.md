@@ -1,16 +1,112 @@
 # opencode-free-autogate
 
-Go 实现的 **OpenCode 免费模型本地网关**：把 opencode.ai 免费模型包装成 OpenAI / Anthropic / Codex 兼容接口，Windows 单文件运行，原生现代化界面。
+Go 实现的 **OpenCode 免费模型本地网关**——把 opencode.ai 免费模型包装成 OpenAI / Anthropic / Codex 兼容接口，Windows 单文件运行。
 
 ```
 opencode 客户端（DSH / ZCode / opencode CLI…）
     ↓  http://localhost:13339/openai/v1
 opencode-free-autogate.exe
-    ↓  两轮健康检测 ＋ 对冲竞速 ＋ 会话粘性 ＋ 吸收模式 ＋ 全局熔断
+    ↓  两轮健康检测 · 对冲竞速 · 会话粘性 · 吸收模式 · 全局熔断
 opencode.ai/zen ＋ 3 个公共 CDN 镜像
 ```
 
-## 工作原理
+## 为什么用它
+
+| 痛点 | 解决方案 |
+|------|----------|
+| 免费模型额度用完就废 | 多源聚合 + 两轮健康检测，额度枯竭自动坐板凳、轮换出口 |
+| 流式回复中途截断 | 吸收模式在网关内换道重试，客户端全程只看保活心跳 |
+| 上游抖动引发雪崩 | 全局熔断器识别风暴，冻结惩罚转指数退避，池子不自相残杀 |
+| 提示缓存命中率低 | 会话粘性钉住胜出出口 + 缓存字段自动注入，实测命中率 99.8% |
+| 畸形请求烧掉出口 | 请求体自动卫生处理（缺字段补全、tools 截断、指纹整形） |
+
+> 程序不内置任何节点或订阅；不收集任何数据。
+
+## 快速开始
+
+1. 从 [Releases](https://github.com/krisxu23/opencode-free-autogate/releases/tag/exe-latest) 下载 `opencode-free-autogate-gui.exe`，任意目录双击运行。
+2. 编辑 opencode 配置文件（`~/.config/opencode/opencode.jsonc`），添加 provider：
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "freegate": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://localhost:13339/openai/v1",
+        "apiKey": "sk-local-freegate"
+      },
+      "models": {
+        "mimo-v2.5-free": { "name": "MiMo v2.5" },
+        "big-pickle": { "name": "Big Pickle" }
+      }
+    }
+  }
+}
+```
+
+3. 在 opencode 里切换到 FreeGate 模型即可。完整模型列表以网关界面为准。
+
+## API 路由
+
+| 协议 | 路由 |
+|---|---|
+| OpenAI | `/openai/v1/models` · `/openai/v1/chat/completions` |
+| Anthropic | `/anthropic/v1/messages` |
+| Codex | `/codex/v1/responses` |
+| 健康检查 | `/healthz` |
+
+## 节点来源
+
+| 来源 | 用法 |
+|---|---|
+| 手动节点 | 设置 → 代理节点框粘贴，一行一个；支持 socks5/http URL 与各协议分享链接 |
+| 订阅 / 节点源 | 打开「在线节点池」开关并填源链接；支持 base64 订阅、socks5 文本列表、amux JSON、明文分享链接 |
+| 裸代理源 | GitHub iplocate 免费 socks5 列表等直填 `ip:port` 文本；直连不通时网关自动走出口兜底 |
+| mihomo 本地 | 填 `socks5://127.0.0.1:7890` 即可复用本机 Clash 的全部节点 |
+
+<details>
+<summary>推荐的公共免费代理源（可选，可用率低，仅作备胎）</summary>
+
+```
+https://github.cmliussss.net/https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt
+https://gh-proxy.com/https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt
+https://ghfast.top/https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt
+https://bestcf.pages.dev/s5gy/all.txt
+https://proxy.amux.ai/api/proxies
+```
+
+> 镜像地址（gh-proxy.com / ghfast.top / gh.llkk.cc 等）随时段波动，多贴几个做对冲。死掉的源只是日志一条 `拉取失败`，零成本；不同镜像拉到相同 ip:port 自动去重。
+</details>
+
+<details>
+<summary>配合 mihomo 按进程分流（可选）</summary>
+
+```yaml
+# proxy-groups 追加
+- name: 'OpenCode网关'
+  type: select
+  proxies: ['OpenCode轮询']
+- name: 'OpenCode轮询'
+  type: load-balance
+  strategy: round-robin
+  include-all: true
+  exclude-type: 'DIRECT'
+  url: 'https://g.cn/generate_204'
+  interval: 600
+
+# rules 顶部追加
+- PROCESS-NAME,opencode-free-autogate.exe,OpenCode网关
+```
+
+网关里填 `socks5://127.0.0.1:7890`，切到「走代理」保存重启。
+</details>
+
+---
+
+<details>
+<summary><strong>工作原理</strong>（展开查看完整流程）</summary>
 
 **启动后约 60 秒完成两轮体检，之后你只跟验证过的节点说话：**
 
@@ -28,7 +124,10 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 - **限流记账分级**：上游亲口给的恢复时间（Retry-After / 响应体）＝权威板凳，到点才回归；自己推断的（如 FreeUsageLimitError 默认 2 小时）允许每小时深检提前推翻。计费类错误（402）直接坐 24 小时。
 - **板凳到期不踩踏**：刚恢复的出口进入 60 秒观察窗，期间只放一路在途，防止对冲并发把刚回血的额度瞬间压爆。
 
-## 功能
+</details>
+
+<details>
+<summary><strong>功能清单</strong>（展开查看所有技术特性）</summary>
 
 ### 调度与加速
 
@@ -78,8 +177,6 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 | **手动节点保护** | 手动填写的节点无条件保留、永不自动移除（坐板凳≠删除） |
 | **模型清单** | 启动拉取免费模型长期使用；短名自动重定向 `-free`；models.dev 每日校准仅作下线预警，不影响深检模型选择 |
 
-程序不内置任何节点或订阅；不收集任何数据。
-
 ### 界面
 
 | 特性 | 说明 |
@@ -89,42 +186,10 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 | **今日用量** | 状态区实时显示当日请求数与 token 进出量（按模型聚合，SSE 流式与非流式双路径解析 usage 块），落盘 exe 同目录 `usage_stats.json`，跨天自动清零 |
 | **栅格化排版** | 统一间距层级；等宽字体展示地址/日志便于对齐 |
 
-## 快速开始
+</details>
 
-1. 从 [Releases](https://github.com/krisxu23/opencode-free-autogate/releases/tag/exe-latest) 下载 `opencode-free-autogate-gui.exe`，任意目录双击运行。
-2. 编辑 opencode 配置文件（`~/.config/opencode/opencode.jsonc`），添加 provider：
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "freegate": {
-      "npm": "@ai-sdk/openai-compatible",
-      "options": {
-        "baseURL": "http://localhost:13339/openai/v1",
-        "apiKey": "sk-local-freegate"
-      },
-      "models": {
-        "mimo-v2.5-free": { "name": "MiMo v2.5" },
-        "big-pickle": { "name": "Big Pickle" }
-      }
-    }
-  }
-}
-```
-
-3. 在 opencode 里切换到 FreeGate 模型即可。完整模型列表以网关界面为准。
-
-## API 路由
-
-| 协议 | 路由 |
-|---|---|
-| OpenAI | `/openai/v1/models` · `/openai/v1/chat/completions` |
-| Anthropic | `/anthropic/v1/messages` |
-| Codex | `/codex/v1/responses` |
-| 健康检查 | `/healthz` |
-
-## 日志速查
+<details>
+<summary><strong>日志速查</strong>（展开查看所有日志标签）</summary>
 
 | 标签 | 含义 |
 |---|---|
@@ -146,53 +211,10 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 | `[唤醒]` | 检测到系统休眠恢复并已自愈 |
 | `[指纹]` | UA 版本同步结果 |
 
-## 节点来源
-
-| 来源 | 用法 |
-|---|---|
-| 手动节点 | 设置 → 代理节点框粘贴，一行一个；支持 socks5/http URL 与各协议分享链接 |
-| 订阅 / 节点源 | 打开「在线节点池」开关并填源链接；支持 base64 订阅、socks5 文本列表、amux JSON、明文分享链接 |
-| 裸代理源 | GitHub iplocate 免费 socks5 列表等直填 `ip:port` 文本；直连不通时网关自动走出口兜底 |
-| mihomo 本地 | 填 `socks5://127.0.0.1:7890` 即可复用本机 Clash 的全部节点 |
-
-<details>
-<summary>推荐的公共免费代理源（可选，可用率低，仅作备胎）</summary>
-
-```
-https://github.cmliussss.net/https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt
-https://gh-proxy.com/https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt
-https://ghfast.top/https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt
-https://bestcf.pages.dev/s5gy/all.txt
-https://proxy.amux.ai/api/proxies
-```
-
-> 镜像地址（gh-proxy.com / ghfast.top / gh.llkk.cc 等）随时段波动，多贴几个做对冲。死掉的源只是日志一条 `拉取失败`，零成本；不同镜像拉到相同 ip:port 自动去重。
 </details>
 
 <details>
-<summary>配合 mihomo 按进程分流（可选）</summary>
-
-```yaml
-# proxy-groups 追加
-- name: 'OpenCode网关'
-  type: select
-  proxies: ['OpenCode轮询']
-- name: 'OpenCode轮询'
-  type: load-balance
-  strategy: round-robin
-  include-all: true
-  exclude-type: 'DIRECT'
-  url: 'https://g.cn/generate_204'
-  interval: 600
-
-# rules 顶部追加
-- PROCESS-NAME,opencode-free-autogate.exe,OpenCode网关
-```
-
-网关里填 `socks5://127.0.0.1:7890`，切到「走代理」保存重启。
-</details>
-
-## 配置
+<summary><strong>配置</strong>（展开查看环境变量）</summary>
 
 设置在界面修改后「保存并重启」生效，持久化到 exe 同目录 `config.json`（控制台版同样读取该文件）。环境变量优先级更高：
 
@@ -216,7 +238,10 @@ https://proxy.amux.ai/api/proxies
 | `PROXY_PROBE_MODEL` | `big-pickle` | 深检模型：GUI 下拉可选（实时上游模型列表），环境变量优先；长期在售型号最稳 |
 | `PROXY_CACHE_FIELDS` | `1` | prompt 缓存字段注入开关 |
 
-## 构建
+</details>
+
+<details>
+<summary><strong>构建</strong>（展开查看构建说明）</summary>
 
 官方发布一律走 GitHub Actions：自动嵌入图标与 GUI 清单、冒烟测试拦截残缺包，产物发布到 [exe-latest](https://github.com/krisxu23/opencode-free-autogate/releases/tag/exe-latest)（显式 `--draft=false`，保证访客与直链可见可下）。**日常使用请直接下载 Release，不要用本地裸 `go build` 的产物**——缺资源嵌入步骤的 exe 没有图标和 Common-Controls 清单，walk 界面会退化成旧版控件样式。
 
@@ -238,3 +263,5 @@ Remove-Item *.syso  # 构建后清理资源文件，不入库
 ```
 
 无 cgo、单文件产物。
+
+</details>
