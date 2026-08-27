@@ -572,15 +572,16 @@ func (ui *gatewayUI) pumpLogs() {
 		ui.shownText = ui.shownText[:50000]
 	}
 	hwnd := ui.logEdit.Handle()
-	win.SendMessage(hwnd, win.WM_SETREDRAW, 0, 0)
-	// 保存滚动位置：用户向下拖动查看旧日志时，SetText 会重置滚动条到顶部，
-	// 必须在替换前后保存/恢复，否则滚动条被强制弹回。
+	// 先保存滚动位置（在 WM_SETREDRAW=OFF 之前获取，确保拿到用户真实位置）。
 	var scrollPos win.POINT
 	win.SendMessage(hwnd, emGetScrollPos, 0, uintptr(unsafe.Pointer(&scrollPos)))
+	win.SendMessage(hwnd, win.WM_SETREDRAW, 0, 0)
 	ui.logEdit.SetText(ui.shownText)
-	win.SendMessage(hwnd, emSetScrollPos, 0, uintptr(unsafe.Pointer(&scrollPos)))
+	// SetText(WM_SETTEXT) 会重置滚动条到顶部。必须先恢复重绘再设置滚动位置，
+	// 否则 EM_SETSCROLLPOS 在 WM_SETREDRAW=OFF 时不生效。
 	win.SendMessage(hwnd, win.WM_SETREDRAW, 1, 0)
 	win.UpdateWindow(hwnd)
+	win.SendMessage(hwnd, emSetScrollPos, 0, uintptr(unsafe.Pointer(&scrollPos)))
 }
 
 func (ui *gatewayUI) refreshStatus() {
