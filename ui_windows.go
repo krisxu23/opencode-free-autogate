@@ -554,9 +554,9 @@ func (ui *gatewayUI) refreshPoolLive() {
 // 修复无效的原因），也不能用 EM_REPLACESEL（它会把插入符滚进视野，导致跳到
 // 末尾）。标准 EDIT 只认按行的 EM_GETFIRSTVISIBLELINE / EM_LINESCROLL。
 //
-// 新日志是拼在文本最前面的，所以旧内容整体下移 len(lines) 行：把首个可见行
-// 号加上新增行数再滚回去，用户看的那一段就纹丝不动。用户本来在顶部时
-// firstVisible=0，目标行也是 0，自然保持跟随最新日志。
+// 新日志拼在文本最前面，旧内容整体下移 len(lines) 行，因此分两种情形：
+//   - 停在顶部（firstVisible==0）：跟随最新日志，滚回第 0 行；
+//   - 已向下滚动：加上新增行数滚回等效位置，用户看的那一段纹丝不动。
 func (ui *gatewayUI) pumpLogs() {
 	lines, cursor := uiLog.Since(ui.logCursor)
 	if len(lines) == 0 {
@@ -577,7 +577,10 @@ func (ui *gatewayUI) pumpLogs() {
 	hwnd := ui.logEdit.Handle()
 	// 替换前记下首个可见行；SetText 后控件回到第 0 行，再滚回等效位置。
 	firstVisible := int(win.SendMessage(hwnd, win.EM_GETFIRSTVISIBLELINE, 0, 0))
-	target := firstVisible + len(lines)
+	target := 0
+	if firstVisible > 0 {
+		target = firstVisible + len(lines) // 已滚开：补上新增行数守住原位
+	}
 
 	win.SendMessage(hwnd, win.WM_SETREDRAW, 0, 0)
 	ui.logEdit.SetText(ui.shownText)
