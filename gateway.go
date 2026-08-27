@@ -76,9 +76,6 @@ func (g *gateway) stickyRemember(session, addr string) {
 	}
 	g.stickyMu.Lock()
 	defer g.stickyMu.Unlock()
-	if g.sticky == nil {
-		g.sticky = make(map[string]stickyEntry)
-	}
 	now := time.Now()
 	// 超限时立即清理；未超限也每 256 次插入强制清一轮——只靠超限触发的话，
 	// 持续涌入的新会话会让过期项永远等不到 len 回落，map 随请求量增长。
@@ -177,6 +174,7 @@ func newGateway(cfg config) *gateway {
 		usage:       newUsageStats(filepath.Dir(configPath())),
 		deepQueue:   make(chan slot, 2048),
 		freshPassed: make(map[string]slot),
+		sticky:      make(map[string]stickyEntry),
 	}
 	usageObserver = func(model string, prompt, completion, cached int64) {
 		g.usage.Observe(model, prompt, completion, cached)

@@ -112,24 +112,23 @@ func (b *outageBreaker) NoteSuccess() {
 	}
 }
 
-func countDistinctExits(events []outageEvent) int {
+// countDistinctField 统计事件列表中某字段的非空去重计数。
+func countDistinctField(events []outageEvent, extract func(outageEvent) string) int {
 	set := make(map[string]struct{})
 	for _, e := range events {
-		if e.exit != "" {
-			set[e.exit] = struct{}{}
+		if v := extract(e); v != "" {
+			set[v] = struct{}{}
 		}
 	}
 	return len(set)
 }
 
+func countDistinctExits(events []outageEvent) int {
+	return countDistinctField(events, func(e outageEvent) string { return e.exit })
+}
+
 func countDistinctMirrors(events []outageEvent) int {
-	set := make(map[string]struct{})
-	for _, e := range events {
-		if e.mirror != "" {
-			set[e.mirror] = struct{}{}
-		}
-	}
-	return len(set)
+	return countDistinctField(events, func(e outageEvent) string { return e.mirror })
 }
 
 // qualifiesLocked 判定窗口内证据是否满足全局故障特征：

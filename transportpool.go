@@ -52,16 +52,21 @@ func (p *transportPool) get(proxyURL *url.URL) *http.Transport {
 }
 
 // sweep 关闭并移除超过 idle 未使用的条目，防止节点池轮换导致缓存无限增长。
+// 先在锁内收集要清理的 transport，释放锁后再关闭连接——避免持锁期间做网络 IO。
 func (p *transportPool) sweep(idle time.Duration) {
+	var stale []*http.Transport
 	p.mu.Lock()
 	now := time.Now()
 	for key, entry := range p.entries {
 		if now.Sub(entry.lastUsed) >= idle {
-			entry.transport.CloseIdleConnections()
+			stale = append(stale, entry.transport)
 			delete(p.entries, key)
 		}
 	}
 	p.mu.Unlock()
+	for _, t := range stale {
+		t.CloseIdleConnections()
+	}
 }
 
 // resetAll 关闭全部条目的闲置连接并清空缓存（系统休眠恢复后调用）：
@@ -69,10 +74,14 @@ func (p *transportPool) sweep(idle time.Duration) {
 // 已被取出的 transport 仍可安全使用（CloseIdleConnections 只清闲置连接），
 // 下一次 get 会按需重建。
 func (p *transportPool) resetAll() {
+	var all []*http.Transport
 	p.mu.Lock()
 	for _, entry := range p.entries {
-		entry.transport.CloseIdleConnections()
+		all = append(all, entry.transport)
 	}
 	p.entries = make(map[string]*transportEntry)
 	p.mu.Unlock()
+	for _, t := range all {
+		t.CloseIdleConnections()
+	}
 }

@@ -53,6 +53,7 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 	var fallback *gatewayResponse
 	stormLogged := false
 	pauseAbsorb := func(attempt int) {
+		delay := g.absorbBackoff(attempt)
 		if g.outage.Tripped() {
 			if !stormLogged {
 				stormLogged = true
@@ -61,10 +62,12 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 			if g.outage.TryProbe() {
 				return // 半开探针：跳过本次退避，立即放行一次尝试验证恢复
 			}
-			time.Sleep(g.absorbBackoff(attempt))
-			return
 		}
-		time.Sleep(g.absorbBackoff(attempt))
+		// 可中断退避：客户端断开时立即退出，不阻塞 goroutine。
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+		}
 	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if ctx.Err() != nil {
@@ -115,6 +118,7 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 		if !streamComplete(data) {
 			g.noteStreamTruncation(trace.finalProxy, trace.upstream)
 			log.Printf("[吸收] 第 %d/%d 次截断（出口:%s 镜像:%s），换道重试", attempt, maxAttempts, trace.finalProxy, trace.upstream)
+			cancel() // 释放 attemptCtx 的 deadline timer，防止泄漏
 			continue
 		}
 		header := resp.header.Clone()
