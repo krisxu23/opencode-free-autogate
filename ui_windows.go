@@ -12,9 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/lxn/walk"
 	dcl "github.com/lxn/walk/declarative"
@@ -549,12 +547,16 @@ func (ui *gatewayUI) refreshPoolLive() {
 	ui.poolLive.SetText(text)
 }
 
-// Win32 edit control messages for scroll-preserving text update.
-const (
-	emGetScrollPos = 0x04DD
-	emSetScrollPos = 0x04DE
-)
-
+// pumpLogs 增量刷新日志文本，同时保持用户当前的滚动位置。
+//
+// 滚动条与刷新解绑的关键：walk 的 TextEdit 是标准 "EDIT" 控件，不支持
+// RichEdit 的 EM_GETSCROLLPOS/EM_SETSCROLLPOS（发过去被静默忽略，这是前几次
+// 修复无效的原因），也不能用 EM_REPLACESEL（它会把插入符滚进视野，导致跳到
+// 末尾）。标准 EDIT 只认按行的 EM_GETFIRSTVISIBLELINE / EM_LINESCROLL。
+//
+// 新日志是拼在文本最前面的，所以旧内容整体下移 len(lines) 行：把首个可见行
+// 号加上新增行数再滚回去，用户看的那一段就纹丝不动。用户本来在顶部时
+// firstVisible=0，目标行也是 0，自然保持跟随最新日志。
 func (ui *gatewayUI) pumpLogs() {
 	lines, cursor := uiLog.Since(ui.logCursor)
 	if len(lines) == 0 {
@@ -573,24 +575,18 @@ func (ui *gatewayUI) pumpLogs() {
 		ui.shownText = ui.shownText[:50000]
 	}
 	hwnd := ui.logEdit.Handle()
-	// 检测用户是否在顶部（用于判断是否自动跟随新日志）。
-	var scrollPos win.POINT
-	win.SendMessage(hwnd, emGetScrollPos, 0, uintptr(unsafe.Pointer(&scrollPos)))
-	atTop := scrollPos.Y <= 0
+	// 替换前记下首个可见行；SetText 后控件回到第 0 行，再滚回等效位置。
+	firstVisible := int(win.SendMessage(hwnd, win.EM_GETFIRSTVISIBLELINE, 0, 0))
+	target := firstVisible + len(lines)
 
-	// 核心：不用 SetText(WM_SETTEXT)——它无条件重置滚动条到顶部。
-	// 改用 EM_SETSEL + EM_REPLACESEL：选中全部文本并替换，但不触发滚动重置。
 	win.SendMessage(hwnd, win.WM_SETREDRAW, 0, 0)
-	win.SendMessage(hwnd, win.EM_SETSEL, 0, uintptr(^uint(0))) // 选中全部
-	win.SendMessage(hwnd, win.EM_REPLACESEL, 0,
-		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(ui.shownText))))
+	ui.logEdit.SetText(ui.shownText)
+	if target > 0 {
+		// EM_LINESCROLL 自动夹紧到实际行数，截断掉尾部旧行也不会越界。
+		win.SendMessage(hwnd, win.EM_LINESCROLL, 0, uintptr(target))
+	}
 	win.SendMessage(hwnd, win.WM_SETREDRAW, 1, 0)
 	win.UpdateWindow(hwnd)
-
-	// 如果用户之前在顶部，自动跟随到新内容；否则保持原位不动。
-	if atTop {
-		win.SendMessage(hwnd, win.EM_SCROLLCARET, 0, 0)
-	}
 }
 
 func (ui *gatewayUI) refreshStatus() {
