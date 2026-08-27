@@ -809,6 +809,9 @@ func (g *gateway) settleDeep(s slot, ok, hardFail bool) {
 		if g.removeFresh(s.addr) {
 			if g.addSlot(s, true) {
 				log.Printf("[转正] %s（复检通过，进入正式池）", s.addr)
+				// 连接预热：转正时立即建立 TCP+TLS 连接并缓存到 transportPool，
+				// 确保第一个用户请求命中热连接，省掉冷启动的握手延迟。
+				go g.prewarmExit(s)
 			}
 		}
 		return
@@ -823,6 +826,29 @@ func (g *gateway) settleDeep(s slot, ok, hardFail bool) {
 	if !g.isManual(s.addr) && g.dropCustom(s.addr) {
 		log.Printf("[池-] %s（复检连不通）", s.addr)
 	}
+}
+
+// prewarmExit 为指定出口预热连接：从 transportPool 获取（或创建）Transport，
+// 这会触发底层 TCP+TLS 揜手并将连接缓存。后续真实请求直接复用热连接，
+// 省掉首次请求的握手延迟（通常 100-300ms）。预热失败不影响功能，只是
+回退到按需建连。
+func (g *gateway) prewarmExit(s slot) {
+	proxyURL := s.proxyURL
+	transport := sharedTransports.get(proxyURL)
+	// 发一个轻量 HEAD 请求触发实际建连（TLS 握手），完成后立即关闭响应体。
+	// 目标用 /healthz 或根路径均可——关键是触发 transport 建立底层连接。
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, g.cfg.upstreamBase+"/v1/models", nil)
+	if err != nil {
+		return
+	}
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return // 预热失败静默忽略，后续请求按需建连
+	}
+	resp.Body.Close()
 }
 
 func (g *gateway) takeCandidates(limit int) []proxyItem {
@@ -1114,7 +1140,7 @@ func requestTransport(proxyURL *url.URL, dialTimeout time.Duration, tlsInsecure 
 			Timeout:   dialTimeout,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		ForceAttemptHTTP2:      false,
+		ForceAttemptHTTP2:      true,
 		DisableCompression:     true,
 		MaxIdleConns:           128,
 		MaxIdleConnsPerHost:    4,
