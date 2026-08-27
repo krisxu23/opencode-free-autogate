@@ -55,6 +55,7 @@ type uiSettings struct {
 	PoolEnabled      bool     `json:"pool_enabled"`       // 在线节点池开关
 	PoolInput        string   `json:"pool_input"`         // 节点源链接，回填输入框
 	RaceEnabled      bool     `json:"race_enabled"`       // 并行竞速开关
+	RaceWidth        int      `json:"race_width"`         // 竞速并发路数（同时发往几个出口，2-32，默认8）
 }
 
 // 节点池默认源已移除：新装用户节点池为空，公共推荐源见 README。
@@ -75,6 +76,7 @@ func defaultSettings() uiSettings {
 		PoolEnabled:      false,
 		PoolInput:        "",
 		RaceEnabled:      true,
+		RaceWidth:        8,
 	}
 }
 
@@ -133,6 +135,13 @@ func (s uiSettings) normalized() uiSettings {
 	// 检测并发：1-128 路（GET 初检与 chat 深检共用）；缺省/越界回落默认 32。
 	if s.ProbeConcurrency <= 0 || s.ProbeConcurrency > 128 {
 		s.ProbeConcurrency = 32
+	}
+	// 竞速并发：2-32 路；缺省/越界回落默认 8。
+	if s.RaceWidth < 2 {
+		s.RaceWidth = 2
+	}
+	if s.RaceWidth > 32 {
+		s.RaceWidth = 32
 	}
 	if strings.TrimSpace(s.GatewayKey) == "" {
 		s.GatewayKey = defaultGatewayKey
@@ -202,6 +211,9 @@ func (s uiSettings) applyEnv() {
 		setIfEmpty("PROXY_RACE", "1")
 	} else {
 		setIfEmpty("PROXY_RACE", "0")
+	}
+	if s.RaceWidth >= 2 {
+		setIfEmpty("PROXY_RACE_WIDTH", fmt.Sprintf("%d", s.RaceWidth))
 	}
 }
 

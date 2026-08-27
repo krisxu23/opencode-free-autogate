@@ -57,6 +57,7 @@ type gatewayUI struct {
 	poolCheck     *walk.CheckBox
 	poolEdit      *walk.TextEdit
 	raceCheck     *walk.CheckBox
+	raceWidth     *walk.NumberEdit // 竞速并发路数
 	poolLive      *walk.TextEdit
 	apiEdit       *walk.LineEdit
 	keyEdit       *walk.LineEdit
@@ -256,6 +257,14 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 										AssignTo: &ui.raceCheck,
 										Text:     "并行竞速：同一请求同时发往多个出口（手动+在线池+直连），最快返回者胜出，无需再设超长超时",
 										Checked:  settings.RaceEnabled,
+									},
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.Label{Text: "竞速并发路数（同时发往几个出口，2-32）:"},
+											dcl.NumberEdit{AssignTo: &ui.raceWidth, Value: float64(settings.RaceWidth), MinValue: 2, MaxValue: 32, Decimals: 0, MaxSize: dcl.Size{Width: 60}},
+											dcl.HSpacer{},
+										},
 									},
 									dcl.Label{Text: "上游镜像（一行一个，请求间轮换；留空只用 opencode.ai）:"},
 									dcl.TextEdit{
@@ -695,6 +704,7 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 	next.PoolEnabled = ui.poolCheck.Checked()
 	next.PoolInput = ui.poolEdit.Text()
 	next.RaceEnabled = ui.raceCheck.Checked()
+	next.RaceWidth = int(ui.raceWidth.Value())
 
 	proxies, proxyErrors := ParseProxyInput(next.ProxyInput)
 	mirrors, mirrorErrors := parseMirrorList(next.MirrorInput)
@@ -718,7 +728,7 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 		report.WriteString("在线节点池：关闭\r\n")
 	}
 	if next.RaceEnabled {
-		report.WriteString("并行竞速：开启（最快出口胜出）\r\n")
+		fmt.Fprintf(&report, "并行竞速：开启（%d 路并发，最快出口胜出）\r\n", next.RaceWidth)
 	} else {
 		report.WriteString("并行竞速：关闭\r\n")
 	}
