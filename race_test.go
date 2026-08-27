@@ -236,7 +236,7 @@ func TestRaceRejectsEmptyStreamWinner(t *testing.T) {
 	}
 }
 
-// 对冲分批：前两批都是挂死出口时，第三批的好出口必须在加发后才能胜出。
+// 对冲分批：所有出口首批全发，好出口应立即胜出（不再等待 hedge 加发）。
 func TestRaceHedgeEscalation(t *testing.T) {
 	dead := func() *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -288,9 +288,9 @@ func TestRaceHedgeEscalation(t *testing.T) {
 	if resp.status != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.status)
 	}
-	// 首批两个死出口（hedgeFirstWave=2），好出口在第二批加发（hedgeBatch=3）后才能出发。
-	if elapsed := time.Since(started); elapsed < cfg.hedgeDelay {
-		t.Fatalf("good exit was in the first wave? elapsed=%s hedgeDelay=%s", elapsed, cfg.hedgeDelay)
+	// 所有出口首批全发，好出口应在 hedgeDelay 之前就胜出。
+	if elapsed := time.Since(started); elapsed > cfg.hedgeDelay {
+		t.Fatalf("good exit should win in first wave, but took %s (hedgeDelay=%s)", elapsed, cfg.hedgeDelay)
 	}
 }
 

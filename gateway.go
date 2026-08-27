@@ -1488,9 +1488,10 @@ func (g *gateway) raceExits() []slot {
 }
 
 // 对冲批次大小：首批少发保住指纹与配额，迟迟无人交付再加发。
+// 注意：首批实际数量由 raceWidth 决定（用户设几路就全发），这里仅作为
+// hedge 阶段性加发的步长；首批全发后 hedge 不再触发（已无剩余出口）。
 const (
-	hedgeFirstWave = 2 // 第一批出口数（直连另计）
-	hedgeBatch     = 3 // 每一加发批次的出口数
+	hedgeBatch = 3 // 每一加发批次的出口数（仅在首批未覆盖全部出口时生效）
 )
 
 // stickyTruncSkip 出口发生流截断后，粘性暂时不再钉它的时长。客户端收到
@@ -1632,7 +1633,9 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 	// 命中（同类项目实测粘性 99.8% vs 竞速 0%），换出口等于缓存全冷。
 	// 粘性出口排到队首且首批只发它一路：快速交付就是零浪费的一击，
 	// 失败则照常按对冲阶梯升级，不影响可用性。
-	firstWave := hedgeFirstWave
+	// 首批全发：用户设了 raceWidth 就全部并发出发，不再分批等待。
+	// 粘性模式例外：只发粘性出口一路，快速命中缓存；失败再按对冲阶梯升级。
+	firstWave := len(exits)
 	if g.cfg.stickyEnabled {
 		if addr, ok := g.stickyLookup(request.session); ok && !g.exits.recentlyTruncated(addr, stickyTruncSkip) {
 			for i := range exits {
