@@ -831,7 +831,7 @@ func (g *gateway) settleDeep(s slot, ok, hardFail bool) {
 // prewarmExit 为指定出口预热连接：从 transportPool 获取（或创建）Transport，
 // 这会触发底层 TCP+TLS 揜手并将连接缓存。后续真实请求直接复用热连接，
 // 省掉首次请求的握手延迟（通常 100-300ms）。预热失败不影响功能，只是
-回退到按需建连。
+// 回退到按需建连。
 func (g *gateway) prewarmExit(s slot) {
 	proxyURL := s.proxyURL
 	transport := sharedTransports.get(proxyURL)
