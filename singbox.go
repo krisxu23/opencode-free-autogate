@@ -358,27 +358,44 @@ func splitALPN(raw string) []string {
 }
 
 // allocatePorts 从 advancedBasePort 起挑选 count 个当前空闲的本地端口。
-// 上限根据请求量动态扩展（预留 50% 余量应对被占用的端口），但不超过 65534。
+// 先在首选范围（basePort ~ basePort+need）内扫描，不够则自动扩展到整个
+// 高位端口空间（~65534），确保节点量大时不会因固定范围不足而失败。
 func allocatePorts(count int) ([]uint16, error) {
 	ports := make([]uint16, 0, count)
-	need := count + count/2 // 余量：被占用的端口会被跳过
-	if need < 10000 {
-		need = 10000
+	// 余量：被占用的端口会被跳过；20% 足够应对少量系统占用端口。
+	need := count + count/5
+	if need < 100 {
+		need = 100
 	}
-	upper := advancedBasePort + need
-	if upper > 65534 {
-		upper = 65534
+
+	// 第一轮：首选范围 basePort ~ basePort+need
+	preferred := advancedBasePort + need
+	if preferred > 65534 {
+		preferred = 65534
 	}
-	for candidate := advancedBasePort; candidate < upper && len(ports) < count; candidate++ {
+	for candidate := advancedBasePort; candidate < preferred && len(ports) < count; candidate++ {
 		listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(candidate)))
 		if err != nil {
-			continue // 端口被占用
+			continue
 		}
 		_ = listener.Close()
 		ports = append(ports, uint16(candidate))
 	}
+
+	// 第二轮：首选范围不够，扩展到高位端口空间（65534 封顶）
 	if len(ports) < count {
-		return nil, fmt.Errorf("本地端口不足（需要 %d 个，可用范围 %d-%d）", count, advancedBasePort, upper)
+		for candidate := preferred; candidate < 65534 && len(ports) < count; candidate++ {
+			listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(candidate)))
+			if err != nil {
+				continue
+			}
+			_ = listener.Close()
+			ports = append(ports, uint16(candidate))
+		}
+	}
+
+	if len(ports) < count {
+		return nil, fmt.Errorf("本地端口不足（需要 %d 个，仅找到 %d 个可用端口）", count, len(ports))
 	}
 	return ports, nil
 }
