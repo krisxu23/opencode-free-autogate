@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1058,10 +1059,12 @@ func (g *gateway) handleClineChat(ctx context.Context, params map[string]any, pa
 
 	// 流式响应：通过 liveResponse 传递给 streamResponse 处理
 	if stream {
+		ctx, cancel := context.WithCancel(context.Background())
+		_ = ctx // 仅用于构造 cancel func
 		return &gatewayResponse{
 			status: http.StatusOK,
 			header: resp.Header,
-			live:   &liveResponse{response: resp, cancel: func() { resp.Body.Close() }},
+			live:   &liveResponse{response: resp, cancel: cancel},
 		}, nil
 	}
 
