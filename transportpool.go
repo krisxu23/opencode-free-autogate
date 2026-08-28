@@ -23,7 +23,12 @@ type transportPool struct {
 type transportEntry struct {
 	transport *http.Transport
 	lastUsed  time.Time
+	created   time.Time
 }
+
+// transportMaxAge 是 transport 的最大存活时间：超过后强制重建，
+// 防止底层 TCP 连接因上游/代理侧超时关闭后在池中残留陈旧连接。
+const transportMaxAge = 5 * time.Minute
 
 var sharedTransports = &transportPool{entries: make(map[string]*transportEntry)}
 
@@ -43,11 +48,16 @@ func (p *transportPool) get(proxyURL *url.URL) *http.Transport {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if entry, ok := p.entries[key]; ok {
-		entry.lastUsed = time.Now()
-		return entry.transport
+		// 超过最大存活时间则强制重建，丢弃可能已陈旧的底层连接池。
+		if time.Since(entry.created) < transportMaxAge {
+			entry.lastUsed = time.Now()
+			return entry.transport
+		}
+		entry.transport.CloseIdleConnections()
+		delete(p.entries, key)
 	}
 	transport := requestTransport(proxyURL, p.dialTimeout, p.tlsInsecure)
-	p.entries[key] = &transportEntry{transport: transport, lastUsed: time.Now()}
+	p.entries[key] = &transportEntry{transport: transport, lastUsed: time.Now(), created: time.Now()}
 	return transport
 }
 

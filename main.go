@@ -472,10 +472,11 @@ type sseGuard struct {
 	mu        sync.Mutex
 	done      bool
 	committed bool
+	stopped   chan struct{} // run 退出时关闭，Finish 等待
 }
 
 func newSseGuard(w http.ResponseWriter) *sseGuard {
-	g := &sseGuard{w: w}
+	g := &sseGuard{w: w, stopped: make(chan struct{})}
 	time.AfterFunc(sseCommitDelay, g.run)
 	return g
 }
@@ -483,6 +484,7 @@ func newSseGuard(w http.ResponseWriter) *sseGuard {
 // run 由 AfterFunc 触发：提交 200 + SSE 头后按间隔发送心跳注释行，
 // 直到 Finish。SSE 规范里冒号开头的注释行会被所有客户端忽略。
 func (g *sseGuard) run() {
+	defer close(g.stopped)
 	g.mu.Lock()
 	if g.done {
 		g.mu.Unlock()
@@ -515,11 +517,13 @@ func (g *sseGuard) beatLocked() {
 	}
 }
 
-// Finish 停止心跳；返回后不会再有任何写入。
+// Finish 停止心跳并等待 goroutine 退出；返回后不会再有任何写入，
+// 调用方可以安全接管 ResponseWriter 写入真实 SSE 数据。
 func (g *sseGuard) Finish() {
 	g.mu.Lock()
 	g.done = true
 	g.mu.Unlock()
+	<-g.stopped
 }
 
 func (g *sseGuard) Committed() bool {
@@ -756,7 +760,8 @@ func writeGatewayResponse(w http.ResponseWriter, r *http.Request, response *gate
 // （message_stop）、Codex responses（response.completed 等）。
 var streamTerminals = [][]byte{
 	[]byte("[DONE]"),
-	[]byte(`"finish_reason":"`), // null 写法是 "finish_reason":null，不含引号值
+	[]byte(`"finish_reason":"`),
+	[]byte(`"finish_reason":null`),
 	[]byte("message_stop"),
 	[]byte("response.completed"),
 	[]byte("response.failed"),
