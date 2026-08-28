@@ -25,7 +25,7 @@ opencode.ai/zen ＋ Cline API (api.cline.bot) ＋ 公共 CDN 镜像
 
 ## 快速开始
 
-1. 从 [Releases](https://github.com/krisxu23/opencode-free-autogate/releases/tag/exe-latest) 下载 `opencode-free-autogate-gui.exe`，任意目录双击运行。
+1. 从 [Releases](https://github.com/krisxu23/opencode-free-autogate/releases/tag/exe-latest) 下载 `opencode-free-autogate-gui.exe`（[jsDelivr 镜像](https://cdn.jsdelivr.net/gh/krisxu23/opencode-free-autogate@exe-latest/opencode-free-autogate-gui.exe)），任意目录双击运行。
 2. 编辑 opencode 配置文件（`~/.config/opencode/opencode.jsonc`），添加 provider：
 
 ```jsonc
