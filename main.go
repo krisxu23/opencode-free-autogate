@@ -102,7 +102,8 @@ func main() {
 		if err := runUI(handler, settings, settingsPath, stop); err != nil {
 			// Walk 框架 TTM_ADDTOOL 在特定 Windows 配置下首次进程启动时失败，
 			// 导致窗口建不出来。自动重启自身进程（带 DSH_RESTARTED 标记防无限循环）。
-			if os.Getenv("DSH_RESTARTED") == "" {
+			// CI 环境（无显示器）跳过：窗口建不出是预期行为，不需要重启。
+			if os.Getenv("DSH_RESTARTED") == "" && os.Getenv("GITHUB_ACTIONS") == "" {
 				log.Printf("[门] 窗口创建失败，自动重启: %v", err)
 				cmd := exec.Command(os.Args[0], os.Args[1:]...)
 				cmd.Env = append(os.Environ(), "DSH_RESTARTED=1")
