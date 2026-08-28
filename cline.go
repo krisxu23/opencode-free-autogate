@@ -911,23 +911,6 @@ func truncateStr(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// ── Cline 模型判断 ──────────────────────────────────────────────────────────
-
-// isClineModel 判断模型名是否属于 Cline 上游（带 cline/ 前缀或已在 Cline 模型表中）。
-func isClineModel(model string) bool {
-	model = strings.TrimSpace(model)
-	if strings.HasPrefix(model, "cline/") {
-		return true
-	}
-	// Cline 支持的模型前缀
-	for _, prefix := range []string{"deepseek/", "openai/", "google/", "qwen/", "meta-llama/", "kwaipilot/"} {
-		if strings.HasPrefix(model, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
 // ── Cline 请求转发 ──────────────────────────────────────────────────────────
 
 // clineUpstreamBody 将客户端请求体转换为 Cline API 格式。
@@ -943,7 +926,7 @@ func clineUpstreamBody(params map[string]any, stream bool) map[string]any {
 
 	model := "deepseek/deepseek-v4-flash"
 	if m, ok := params["model"].(string); ok && m != "" {
-		model = m
+		model = strings.TrimPrefix(m, "cline/") // 发给 Cline API 时去掉前缀
 	}
 
 	body := map[string]any{
@@ -1078,4 +1061,29 @@ func (g *gateway) handleClineChat(ctx context.Context, params map[string]any, pa
 		header: http.Header{"Content-Type": {"application/json; charset=utf-8"}},
 		body:   respBody,
 	}, nil
+}
+
+// ── Cline 模型列表 ──────────────────────────────────────────────────────────
+
+// clineFreeModels 是 Cline 支持的免费模型清单。所有模型名带 cline/ 前缀，
+// 网关据此区分 Cline 上游与 zen 上游（zen 也有 deepseek 等同名模型）。
+var clineFreeModels = []string{
+	"cline/deepseek-v4-flash",
+	"cline/deepseek-v4-pro",
+	"cline/openai/gpt-4.1-nano",
+	"cline/qwen/qwen3-235b-a22b",
+	"cline/meta-llama/llama-4-maverick",
+	"cline/google/gemini-2.5-flash",
+	"cline/google/gemini-2.5-pro",
+	"cline/kwaipilot/kat-coder-pro",
+}
+
+// clineModelListText 返回一行一个模型名的文本，用于 GUI 显示和复制。
+func clineModelListText() string {
+	return strings.Join(clineFreeModels, "\r\n")
+}
+
+// isClineModel 判断模型名是否属于 Cline 上游（带 cline/ 前缀）。
+func isClineModel(model string) bool {
+	return strings.HasPrefix(strings.TrimSpace(model), "cline/")
 }

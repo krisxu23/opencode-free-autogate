@@ -365,21 +365,16 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 										AssignTo: &ui.clineModelsEdit,
 										ReadOnly: true,
 										VScroll:  true,
-										MinSize:  dcl.Size{Height: 120},
+										MinSize:  dcl.Size{Height: 160},
 										Font:     monoFont,
-										Text: `deepseek/deepseek-v4-flash
-deepseek/deepseek-v4-pro
-openai/gpt-4.1-nano
-qwen/qwen3-235b-a22b
-meta-llama/llama-4-maverick
-google/gemini-2.5-flash`,
+										Text:     clineModelListText(),
 									},
 									dcl.PushButton{Text: "复制全部模型名", Font: uiFont, OnClicked: func() {
 										ui.copyText(ui.clineModelsEdit.Text(), "Cline 模型列表")
 									}},
 								},
 							},
-							dcl.Label{Text: "提示：在客户端使用时，Model 字段填上述模型名即可。网关会自动识别 Cline 模型并走 Cline 上游。"},
+							dcl.Label{Text: "提示：Model 字段必须带 cline/ 前缀（如 cline/deepseek-v4-flash），网关据此走 Cline 上游。"},
 						},
 					},
 				},
