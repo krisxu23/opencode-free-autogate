@@ -16,8 +16,8 @@ func TestOpenCodeRoutesAndHeaders(t *testing.T) {
 			t.Fatalf("expected route %s to be accepted", raw)
 		}
 	}
-	if _, ok := normalizePath(project, "/v1/chat/completions"); ok {
-		t.Fatal("raw /v1 route must not bypass the OpenCode prefixes")
+	if _, ok := normalizePath(project, "/v1/chat/completions"); !ok {
+		t.Fatal("raw /v1 route should be accepted as standard OpenAI-compatible path")
 	}
 
 	application := &app{gateway: newGateway(config{project: project})}
