@@ -1,13 +1,13 @@
 # opencode-free-autogate
 
-Go 实现的 **OpenCode 免费模型本地网关**——把 opencode.ai 免费模型包装成 OpenAI / Anthropic / Codex 兼容接口，Windows 单文件运行。
+Go 实现的 **多源免费模型本地网关**——把 opencode.ai 免费模型 + Cline 免费模型包装成 OpenAI / Anthropic / Codex 兼容接口，Windows 单文件运行。
 
 ```
-opencode 客户端（DSH / ZCode / opencode CLI…）
-    ↓  http://localhost:13339/openai/v1
+opencode 客户端（DSH / ZCode / opencode CLI / Cline…）
+    ↓  http://localhost:13339/v1
 opencode-free-autogate.exe
     ↓  两轮健康检测 · 对冲竞速 · 会话粘性 · 吸收模式 · 全局熔断
-opencode.ai/zen ＋ 3 个公共 CDN 镜像
+opencode.ai/zen ＋ Cline API (api.cline.bot) ＋ 公共 CDN 镜像
 ```
 
 ## 为什么用它
@@ -19,6 +19,7 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 | 上游抖动引发雪崩 | 全局熔断器识别风暴，冻结惩罚转指数退避，池子不自相残杀 |
 | 提示缓存命中率低 | 会话粘性钉住胜出出口 + 缓存字段自动注入，实测命中率 99.8% |
 | 畸形请求烧掉出口 | 请求体自动卫生处理（缺字段补全、tools 截断、指纹整形） |
+| 免费模型来源单一 | 同时聚合 opencode.ai + Cline 两个免费模型源，一套接口统一访问 |
 
 > 程序不内置任何节点或订阅；不收集任何数据。
 
@@ -34,12 +35,12 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
     "freegate": {
       "npm": "@ai-sdk/openai-compatible",
       "options": {
-        "baseURL": "http://localhost:13339/openai/v1",
+        "baseURL": "http://localhost:13339/v1",
         "apiKey": "sk-local-freegate"
       },
       "models": {
-        "mimo-v2.5-free": { "name": "MiMo v2.5" },
-        "big-pickle": { "name": "Big Pickle" }
+        "opencode/big-pickle": { "name": "Big Pickle (opencode)" },
+        "cline/deepseek/deepseek-v4-flash:free": { "name": "DeepSeek V4 Flash (Cline)" }
       }
     }
   }
@@ -48,14 +49,52 @@ opencode.ai/zen ＋ 3 个公共 CDN 镜像
 
 3. 在 opencode 里切换到 FreeGate 模型即可。完整模型列表以网关界面为准。
 
+## 模型列表
+
+网关启动后自动拉取两个来源的免费模型，统一展示在「运行状态」页：
+
+```
+opencode/big-pickle
+opencode/deepseek-v4-flash-free
+opencode/gpt-5
+opencode/qwen3.8-flash
+opencode/qwen3-coder
+...
+──────────── Cline ────────────
+cline/anthropic/claude-opus-4.7:free
+cline/deepseek/deepseek-v4-flash:free
+cline/openai/gpt-5.3-codex:free
+cline/z-ai/glm-5.2:free
+...
+```
+
+- **opencode/** 前缀：来自 opencode.ai/zen 免费通道
+- **cline/** 前缀：来自 Cline API 免费通道（需 OAuth 账号）
+- 分隔线区分两个供应商，`/v1/models` 端点返回带前缀的完整列表
+- 请求时两种前缀均可：`opencode/big-pickle` 或 `big-pickle` 都能路由
+- Cline 模型列表从 `api.cline.bot/api/v1/models` 动态拉取，自动过滤 `:free` 后缀，24 小时缓存
+
 ## API 路由
 
 | 协议 | 路由 |
 |---|---|
-| OpenAI | `/openai/v1/models` · `/openai/v1/chat/completions` |
-| Anthropic | `/anthropic/v1/messages` |
-| Codex | `/codex/v1/responses` |
+| OpenAI | `/v1/models` · `/v1/chat/completions` |
+| Anthropic | `/v1/messages` |
+| Codex | `/v1/responses` |
 | 健康检查 | `/healthz` |
+
+## Cline 账号管理
+
+Cline 免费模型通过 OAuth 账号访问。在网关界面「Cline」页：
+
+1. 点击「导入账号 (OAuth)」→ 浏览器自动打开 WorkOS 授权页
+2. 用 Google / GitHub / 邮箱登录并授权
+3. 授权成功后账号自动注册，refreshToken 保存到本地
+
+支持多账号轮转：额度用尽（429）时自动切换下一个账号，冷却到期后自动恢复。
+
+> Cline 的 `:free` 模型走 OpenRouter 聚合的免费共享通道，所有用户共享上游配额池，
+> 高峰期可能触发 429 限流，属正常现象。
 
 ## 节点来源
 
@@ -139,6 +178,15 @@ https://proxy.amux.ai/api/proxies
 | **SSE 保活** | 竞速超过 5 秒未决时提前提交 SSE 响应头并发心跳注释行，客户端不会误判断线 |
 | **吸收模式** | 流式回复在网关内完整接收并校验，中途截断自动换道重试（默认最多 10 次），客户端全程只看保活心跳；拿到验证完整的原文后一次性交付 |
 
+### 多源聚合
+
+| 功能 | 说明 |
+|---|---|
+| **opencode.ai 免费通道** | 从 opencode.ai/zen 拉取 `:free` 后缀模型，自动重定向短名（`big-pickle` → `big-pickle-free`） |
+| **Cline 免费通道** | 通过 OAuth 账号访问 `api.cline.bot` 免费模型，支持多账号轮转、429 冷却自动切号 |
+| **统一模型列表** | `/v1/models` 返回两个来源的全部免费模型，带 `opencode/` / `cline/` 前缀区分供应商 |
+| **动态模型拉取** | Cline 模型从 API 实时获取，自动过滤 `:free` 后缀，24 小时缓存，感知上下线 |
+
 ### 健康管理
 
 | 功能 | 说明 |
@@ -166,6 +214,7 @@ https://proxy.amux.ai/api/proxies
 | **思考模型兼容** | deepseek/kimi/minimax 系模型多轮对话自动补 `reasoning_content` 占位符，防止 OpenAI 格式客户端缺字段导致上游 400 |
 | **管家流量拦截** | 客户端的配额探测类请求（极保守匹配＋日志可见）本地直接应答，不消耗上游额度 |
 | **UA 版本同步** | 每天从 npm 拉官方 CLI 最新版本号，固定版本号不会日久成为识别特征 |
+| **uTLS 指纹伪装** | 内嵌 `metacubex/utls`，TLS ClientHello 模拟 Chrome 133 指纹，绕过上游 TLS 指纹检测 |
 | **回显取证**（默认关） | `PROXY_ECHO_DEBUG=1` 时把胜者响应头脱敏落日志（auth/token/key 类值替换为 `<已脱敏 len=N>`），用于排查上游是否下发 turn-scoped 状态头 |
 
 ### 节点接入
@@ -175,7 +224,7 @@ https://proxy.amux.ai/api/proxies
 | **高级节点** | 内嵌 sing-box v1.13：`vless` `vmess` `trojan` `ss` `hysteria2(hy2)` `tuic` 分享链接直接粘贴，自动转为内部 SOCKS5 参与探活和竞速 |
 | **在线节点池** | 后台循环：拉源 → 初检 → 复检 → 转正；两轮之间默认歇 60 秒（`PROXY_PROBE_ROUND_GAP_MS` 可调，15 秒~30 分钟），对公益源站保持礼貌频率；测试与入池规模完全由源列表决定；源直连失败自动经健康出口兜底重试；支持文本列表、JSON、base64 订阅、裸 socks5/ip:port 列表 |
 | **手动节点保护** | 手动填写的节点无条件保留、永不自动移除（坐板凳≠删除） |
-| **模型清单** | 启动拉取免费模型长期使用；短名自动重定向 `-free`；models.dev 每日校准仅作下线预警，不影响深检模型选择 |
+| **模型清单** | 启动拉取免费模型长期使用；短名自动重定向 `-free` |
 
 ### 界面
 
@@ -185,6 +234,8 @@ https://proxy.amux.ai/api/proxies
 | **自绘信息卡** | 顶部横幅：应用名 ＋ 运行时长秒级跳动 ＋ 大号健康状态灯（蓝=待命 绿=正常 橙=有限流/截断 红=出现失败），颜色与状态行联动 |
 | **今日用量** | 状态区实时显示当日请求数与 token 进出量（按模型聚合，SSE 流式与非流式双路径解析 usage 块），落盘 exe 同目录 `usage_stats.json`，跨天自动清零 |
 | **栅格化排版** | 统一间距层级；等宽字体展示地址/日志便于对齐 |
+| **Cline 账号管理** | 独立 Cline 页：OAuth 导入账号、账号列表、刷新列表；可用模型合并到运行状态页统一展示 |
+| **模型列表合并** | 运行状态页展示 opencode + Cline 全部免费模型，带前缀和分隔线区分供应商 |
 
 </details>
 
@@ -206,7 +257,11 @@ https://proxy.amux.ai/api/proxies
 | `[限流] … 暂停 …（上游声明/推断）` | 额度受限板凳；括号内为依据等级 |
 | `[池] 经出口 xxx 拉取成功` | 节点源直连失败后经出口兜底重试成功 |
 | `[池] 拉取失败 … / 出口兜底也失败` | 源直连失败，正在/已用出口兜底重试 |
-| `[校准]` | models.dev 下线预警（借道出口拉取） |
+| `[Cline] account=xxx model=xxx stream=xxx` | Cline 上游请求日志 |
+| `[Cline] 401 from API: ...` | Cline token 失效，正在刷新重试 |
+| `[模型] 已刷新 N 个免费模型` | opencode 上游模型列表刷新成功 |
+| `[Cline] 免费模型已更新（N 个）` | Cline 免费模型列表刷新成功 |
+| `[模型重定向] xxx -> yyy` | 模型名重定向（短名→长名 或 前缀→上游名） |
 | `[管家]` | 本地拦截了客户端的配额探测请求 |
 | `[唤醒]` | 检测到系统休眠恢复并已自愈 |
 | `[指纹]` | UA 版本同步结果 |
@@ -222,6 +277,7 @@ https://proxy.amux.ai/api/proxies
 |---|---|---|
 | `PORT` | `13339` | 监听端口 |
 | `LISTEN_ADDR` | `127.0.0.1` | 监听地址；设为 `0.0.0.0` 可供局域网设备访问 |
+| `GATEWAY_KEY` | 自动生成 | API 访问密钥（格式 `sk-xxx`）；未设置时自动生成随机 Key |
 | `CUSTOM_PROXIES` | 空 | 逗号分隔的代理 URL / 分享链接 |
 | `MIRROR_URLS` | 空 | 上游镜像基址 |
 | `PROXY_LIST_URLS` | 空 | 节点池源链接 |
