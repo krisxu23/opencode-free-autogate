@@ -19,6 +19,7 @@ func TestRestartEnvStripsAllManagedVars(t *testing.T) {
 	t.Setenv("PROXY_LIST_URLS", "https://old.example/sub")
 	t.Setenv("PROXY_RACE", "1")
 	t.Setenv("PROXY_RACE_WIDTH", "8")
+	t.Setenv("GATEWAY_KEY", "sk-test-old-key")
 
 	env := restartEnv()
 	joined := strings.Join(env, "\n")
@@ -27,6 +28,7 @@ func TestRestartEnvStripsAllManagedVars(t *testing.T) {
 		"PROXY_FIRST_BYTE_TIMEOUT=", "HARD_TIMEOUT=",
 		"PROXY_DEEP_PROBE_INTERVAL=", "PROXY_PROBE_MODEL=",
 		"PROXY_LIST_URLS=", "PROXY_RACE=", "PROXY_RACE_WIDTH=",
+		"GATEWAY_KEY=",
 	} {
 		if strings.Contains(joined, key) {
 			t.Fatalf("%s 未被剔除，旧值会在重启后覆盖新配置", key)

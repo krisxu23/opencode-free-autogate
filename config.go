@@ -96,7 +96,7 @@ func loadConfig(project projectSpec) config {
 		zenRelay:             envString("ZENPROXY_RELAY", "https://zenproxy.top/api/relay"),
 		zenKey:               os.Getenv("ZENPROXY_KEY"),
 		forceRelay:           os.Getenv("FORCE_RELAY") == "1",
-		gatewayKey:           envOrDefault("GATEWAY_KEY", generateAPIKey()),
+		gatewayKey:           os.Getenv("GATEWAY_KEY"),
 		firstByteTimeout:     firstByte,
 		hardTimeout:          envMilliseconds("HARD_TIMEOUT", 180000),
 		absorbStreaming:      envBool("PROXY_ABSORB_STREAMING", false),

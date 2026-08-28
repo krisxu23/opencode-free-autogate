@@ -9,7 +9,6 @@ import (
 )
 
 const (
-	defaultGatewayKey = "sk-local-freegate"
 	configFileName    = "config.json"
 
 	outboundProxy  = "proxy"
@@ -34,6 +33,7 @@ var configManagedEnvKeys = []string{
 	"PROXY_LIST_URLS",
 	"PROXY_RACE",
 	"PROXY_RACE_WIDTH",
+	"GATEWAY_KEY",
 }
 
 // uiSettings 是界面可编辑的配置，持久化在 exe 同目录的 config.json。
@@ -72,7 +72,7 @@ func defaultSettings() uiSettings {
 		BudgetSeconds:    180,
 		DeepProbeMinutes: 60,
 		ProbeConcurrency: 32,
-		GatewayKey:       defaultGatewayKey,
+		GatewayKey:       generateAPIKey(),
 		PoolEnabled:      false,
 		PoolInput:        "",
 		RaceEnabled:      true,
@@ -144,7 +144,7 @@ func (s uiSettings) normalized() uiSettings {
 		s.RaceWidth = 32
 	}
 	if strings.TrimSpace(s.GatewayKey) == "" {
-		s.GatewayKey = defaultGatewayKey
+		s.GatewayKey = generateAPIKey()
 	}
 	// 深检模型只做去空白；允许填任意 ID（上游临时下架时由校准哨兵告警）。
 	s.ProbeModel = strings.TrimSpace(s.ProbeModel)
@@ -215,6 +215,7 @@ func (s uiSettings) applyEnv() {
 	if s.RaceWidth >= 2 {
 		setIfEmpty("PROXY_RACE_WIDTH", fmt.Sprintf("%d", s.RaceWidth))
 	}
+	setIfEmpty("GATEWAY_KEY", s.GatewayKey)
 }
 
 func setIfEmpty(key, value string) {

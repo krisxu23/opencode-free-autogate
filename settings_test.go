@@ -89,7 +89,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 func TestLoadSettingsFallsBackWhenMissingOrBroken(t *testing.T) {
 	dir := t.TempDir()
 	missing := loadSettings(filepath.Join(dir, "absent.json"))
-	if missing.Port != 13339 || missing.GatewayKey != defaultGatewayKey {
+	if missing.Port != 13339 || !strings.HasPrefix(missing.GatewayKey, "sk-") {
 		t.Fatalf("unexpected defaults: %+v", missing)
 	}
 
@@ -118,7 +118,7 @@ func TestSettingsNormalizedClampsInvalidValues(t *testing.T) {
 	if normalized.BudgetSeconds < normalized.FirstByteSeconds {
 		t.Fatalf("budget %d must not be below first byte %d", normalized.BudgetSeconds, normalized.FirstByteSeconds)
 	}
-	if normalized.GatewayKey != defaultGatewayKey {
+	if !strings.HasPrefix(normalized.GatewayKey, "sk-") {
 		t.Fatalf("key = %q", normalized.GatewayKey)
 	}
 	if normalized.DeepProbeMinutes != 60 {
