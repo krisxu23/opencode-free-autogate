@@ -90,7 +90,7 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 	if settings.Outbound == outboundProxy {
 		outboundIndex = 0
 	}
-	apiBase := fmt.Sprintf("http://localhost:%d/openai/v1", settings.Port)
+	apiBase := fmt.Sprintf("http://localhost:%d/v1", settings.Port)
 
 	// 从 exe 资源加载图标（go-winres 嵌入的 ID=1），用于标题栏和任务栏。
 	var appIcon *walk.Icon
@@ -146,7 +146,7 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 									}},
 
 									dcl.Label{
-										Text:       "设置环境变量 GATEWAY_KEY 后启用 Bearer 校验；未设置时不校验（默认仅本机监听）。Anthropic 客户端把地址末尾换成 /anthropic/v1。",
+										Text:       "设置 GATEWAY_KEY 后启用校验（格式 sk-xxx）。未设置时自动生成随机 Key。兼容路径：/vscode/{key}/v1/chat/completions。",
 										ColumnSpan: 3,
 									},
 								},

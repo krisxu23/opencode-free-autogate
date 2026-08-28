@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"log"
 	"os"
 	"strconv"
@@ -93,7 +95,7 @@ func loadConfig(project projectSpec) config {
 		zenRelay:             envString("ZENPROXY_RELAY", "https://zenproxy.top/api/relay"),
 		zenKey:               os.Getenv("ZENPROXY_KEY"),
 		forceRelay:           os.Getenv("FORCE_RELAY") == "1",
-		gatewayKey:           os.Getenv("GATEWAY_KEY"),
+		gatewayKey:           envOrDefault("GATEWAY_KEY", generateAPIKey()),
 		firstByteTimeout:     firstByte,
 		hardTimeout:          envMilliseconds("HARD_TIMEOUT", 180000),
 		absorbStreaming:      envBool("PROXY_ABSORB_STREAMING", false),
@@ -122,6 +124,21 @@ func loadConfig(project projectSpec) config {
 	// 池的拨号参数在启动阶段一次性注入：键只依赖代理地址——探活即预热竞速连接。
 	sharedTransports.configure(firstByte, tlsInsecure)
 	return cfg
+}
+
+// envOrDefault 返回环境变量值，为空时返回默认值。
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// generateAPIKey 生成随机 sk- 前缀 API Key。
+func generateAPIKey() string {
+	b := make([]byte, 24)
+	_, _ = rand.Read(b)
+	return "sk-" + hex.EncodeToString(b)
 }
 
 // envDefaultOn 解析默认开启的布尔环境变量：仅显式设为 0/false/off/n/no 时关闭。

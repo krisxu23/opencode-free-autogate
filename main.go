@@ -202,6 +202,14 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	trace := newRequestTrace()
 	log.Printf("[>] %s %s", r.Method, r.URL.Path)
+
+	// URL path 认证兼容模式：/vscode/{key}/v1/... （兼容不能发 Header 的客户端）
+	if key, ok := extractURLKey(r.URL.Path); ok {
+		r.Header.Set("Authorization", "Bearer "+key)
+		// 去掉 /vscode/{key} 前缀，归一化为 /v1/...
+		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/vscode/"+key)
+	}
+
 	if !a.authorized(r) {
 		trace.finalStatus = http.StatusUnauthorized
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
@@ -242,6 +250,19 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 }
 
+// extractURLKey 从 /vscode/{key}/... 路径中提取 API Key。
+func extractURLKey(path string) (string, bool) {
+	if !strings.HasPrefix(path, "/vscode/") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(path, "/vscode/")
+	idx := strings.Index(rest, "/")
+	if idx <= 0 {
+		return "", false
+	}
+	return rest[:idx], true
+}
+
 func (a *app) authorized(r *http.Request) bool {
 	if !a.gateway.cfg.project.gatewayAuth || a.gateway.cfg.gatewayKey == "" {
 		return true
@@ -258,10 +279,11 @@ func (a *app) authorized(r *http.Request) bool {
 }
 
 func normalizePath(project projectSpec, raw string) (string, bool) {
+	// 标准 /v1/ 路径直接通过
+	if strings.HasPrefix(raw, "/v1/") {
+		return raw, true
+	}
 	if len(project.prefixes) == 0 {
-		if strings.HasPrefix(raw, "/v1/") {
-			return raw, true
-		}
 		return "", false
 	}
 	for _, prefix := range project.prefixes {
