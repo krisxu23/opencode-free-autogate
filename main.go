@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const maxRequestBody = 32 << 20
+const maxRequestBody = 32 << 20 // 32 MiB
 
 // usageObserver 由 newGateway 装配：流式转发路径边写边解析 usage 块，
 // 避免给 streamResponse 增加网关依赖（缓冲响应在 finish() 统一记账）。
