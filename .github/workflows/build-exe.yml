@@ -31,8 +31,13 @@ jobs:
       - name: Resolve dependencies
         run: |
           go mod tidy
-          git diff --exit-code -- go.mod go.sum
+          $diff = git diff -- go.mod go.sum
+          if ($diff) { Write-Host "::warning::go.mod/go.sum 变更:"; Write-Host $diff; throw "go mod tidy 改变了依赖清单" }
           go mod download
+
+      # 编译检查（快速发现语法/类型错误）
+      - name: Compile check
+        run: go build -tags "with_quic,with_utls,with_gvisor" -o NUL ./...
 
       # 仅提示不阻断：发现未格式化文件时打印清单
       - name: Check formatting
