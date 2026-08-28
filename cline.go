@@ -223,6 +223,7 @@ func refreshClineToken(refreshToken string) (*clineRefreshResp, error) {
 	body := map[string]string{
 		"refreshToken": refreshToken,
 		"grantType":    "refresh_token",
+		"clientType":   "extension",
 	}
 	resp, err := clineHTTPPostJSON(clineAPIBase+"/auth/refresh", body)
 	if err != nil {
@@ -1081,18 +1082,25 @@ func (g *gateway) handleClineChat(ctx context.Context, params map[string]any, pa
 
 // ── Cline 模型列表 ──────────────────────────────────────────────────────────
 
-// clineFreeModels 是 Cline 支持的免费模型清单。所有模型名带 cline/ 前缀，
-// 网关据此区分 Cline 上游与 zen 上游（zen 也有 deepseek 等同名模型）。
+// clineFreeModels 是 Cline 支持的免费模型清单。
+// Cline 模型格式: provider/model（如 anthropic/claude-sonnet-4.6）
+// ClinePass 模型格式: cline-pass/model（如 cline-pass/deepseek-v4-pro）
+// 所有模型名带 cline/ 前缀，网关据此区分 Cline 上游与 zen 上游。
 var clineFreeModels = []string{
-	"cline/deepseek/deepseek-v4-flash",
-	"cline/deepseek/deepseek-v4-pro",
-	"cline/openai/gpt-4.1-nano",
-	"cline/openai/gpt-4.1-mini",
-	"cline/qwen/qwen3-235b-a22b",
-	"cline/meta-llama/llama-4-maverick",
-	"cline/google/gemini-2.5-flash",
-	"cline/google/gemini-2.5-pro",
+	// Cline 官方模型
+	"cline/anthropic/claude-opus-4.7",
+	"cline/anthropic/claude-sonnet-4.6",
+	"cline/openai/gpt-5.3-codex",
+	"cline/openai/gpt-5.4",
+	"cline/google/gemini-3.1-pro-preview",
+	"cline/google/gemini-3.1-flash-lite-preview",
 	"cline/kwaipilot/kat-coder-pro",
+	// ClinePass 模型（同一 API，不同 provider 标识）
+	"cline/cline-pass/deepseek-v4-pro",
+	"cline/cline-pass/qwen3.7-max",
+	"cline/cline-pass/mimo-v2.5",
+	"cline/cline-pass/kimi-k2.7-code",
+	"cline/cline-pass/glm-5.2",
 }
 
 // clineModelListText 返回一行一个模型名的文本，用于 GUI 显示和复制。
