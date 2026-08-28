@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"io"
 	"log"
 	"os"
 	"strconv"
@@ -137,7 +138,7 @@ func envOrDefault(key, def string) string {
 // generateAPIKey 生成随机 sk- 前缀 API Key。
 func generateAPIKey() string {
 	b := make([]byte, 24)
-	_, _ = rand.Read(b)
+	_, _ = io.ReadFull(rand.Reader, b)
 	return "sk-" + hex.EncodeToString(b)
 }
 
