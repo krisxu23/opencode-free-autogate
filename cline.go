@@ -969,7 +969,7 @@ func clineUpstreamBody(params map[string]any, stream bool) map[string]any {
 }
 
 // handleClineChat 处理 Cline 上游请求：选择账号 → 构造请求 → 转发 → 流式/非流式响应。
-func (g *gateway) handleClineChat(ctx context.Context, params map[string]any, path string, stream bool, deadline time.Time, trace *requestTrace) (*gatewayResponse, error) {
+func (g *gateway) handleClineChat(ctx context.Context, w http.ResponseWriter, params map[string]any, path string, stream bool, deadline time.Time, trace *requestTrace) (*gatewayResponse, error) {
 	strategy := parseClineStrategy(os.Getenv("CLINE_POOL_STRATEGY"))
 	acc := clinePickAccount(strategy)
 	if acc == nil {
@@ -1058,32 +1058,39 @@ func (g *gateway) handleClineChat(ctx context.Context, params map[string]any, pa
 	clineBumpUsage(acc)
 
 	// 流式响应：Cline API 不发 finish_reason / [DONE] 终止标记，
-	// 用 pipe 包装，在流结束时注入标准终止标记。
+	// 直接写入客户端并在结束时注入标准终止标记。
 	if stream {
-		pr, pw := io.Pipe()
-		go func() {
-			defer pw.Close()
-			buf := make([]byte, 32<<10)
-			for {
-				n, readErr := resp.Body.Read(buf)
-				if n > 0 {
-					pw.Write(buf[:n])
-				}
-				if readErr != nil {
-					break
+		flusher, _ := w.(http.Flusher)
+
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Del("Content-Length")
+		w.WriteHeader(http.StatusOK)
+
+		buf := make([]byte, 32<<10)
+		for {
+			n, readErr := resp.Body.Read(buf)
+			if n > 0 {
+				w.Write(buf[:n])
+				if flusher != nil {
+					flusher.Flush()
 				}
 			}
-			resp.Body.Close()
-			// 注入标准终止标记，确保客户端正确识别流结束
-			pw.Write([]byte("data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n"))
-			pw.Write([]byte("data: [DONE]\n\n"))
-		}()
+			if readErr != nil {
+				break
+			}
+		}
+		resp.Body.Close()
 
-		return &gatewayResponse{
-			status: http.StatusOK,
-			header: resp.Header,
-			live:   &liveResponse{response: &http.Response{Body: pr, Header: resp.Header}, cancel: func() { pr.Close() }},
-		}, nil
+		// 注入标准终止标记，确保客户端正确识别流结束
+		w.Write([]byte("data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+
+		return &gatewayResponse{status: http.StatusOK}, nil
 	}
 
 	// 非流式响应

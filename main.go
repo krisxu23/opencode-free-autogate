@@ -389,7 +389,7 @@ func (a *app) handlePost(w http.ResponseWriter, r *http.Request, path string, de
 	// Cline 路由：模型名带 cline/ 前缀或属于已知 Cline 模型时，走 Cline 上游。
 	if payload != nil {
 		if model, _ := payload["model"].(string); isClineModel(model) {
-			response, err := a.gateway.handleClineChat(r.Context(), payload, path, stream, deadline, trace)
+			response, err := a.gateway.handleClineChat(r.Context(), w, payload, path, stream, deadline, trace)
 			return response, nil, err
 		}
 	}
