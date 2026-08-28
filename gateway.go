@@ -158,7 +158,6 @@ type gateway struct {
 	stickyMu     sync.Mutex
 	sticky       map[string]stickyEntry // 会话 → 上次胜出出口（prompt 缓存友好）
 	stickyWrites int                    // 插入计数：周期性强制清理过期项（见 stickyRemember）
-	calibrated   atomic.Value           // *modelCatalog：models.dev 校准的免费模型清单
 	deepRunning  atomic.Bool            // 深检轮重叠保护
 
 	lastStatus     atomic.Int32 // 最近一次请求的最终状态码，供界面健康色
@@ -257,8 +256,6 @@ func (g *gateway) start(ctx context.Context) {
 
 	// 每小时 chat 深检：穿透额度门，抓"网络通但配额枯竭"的假健康节点。
 	go g.startDeepProber(ctx)
-	// models.dev 免费模型清单每日校准：探活模型名自动跟随上游改版。
-	go g.startModelCalibrator(ctx)
 	// Windows 休眠恢复检测：清死连接 + 补槽。
 	startWakeDetector(g, ctx)
 	// UA 版本跟随官方发版，防固定版本号成为识别特征。
@@ -673,6 +670,15 @@ func (g *gateway) probeBody() []byte {
 		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
 	})
 	return body
+}
+
+// probeModelID 返回深检固定使用的模型：big-pickle 是 opencode 长期在售的
+// 免费模型，其他名字随时会下线。可用 PROXY_PROBE_MODEL 环境变量覆盖。
+func (g *gateway) probeModelID() string {
+	if g.cfg.probeModel != "" {
+		return g.cfg.probeModel
+	}
+	return "big-pickle"
 }
 
 // probe 是常态探活：GET /v1/models，零模型配额，验证"网络路径通不通"。
