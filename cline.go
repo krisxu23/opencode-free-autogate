@@ -1112,8 +1112,9 @@ func (g *gateway) handleClineChat(ctx context.Context, w http.ResponseWriter, pa
 
 // clineFullModelListText 返回当前缓存的 Cline 免费模型（带 cline/ 前缀），
 // 一行一个，用于 GUI 显示和复制。
+// 注意：只读内存缓存，绝不触发网络拉取——否则首次启动（无缓存）会在此
+// 阻塞 GUI 主线程，导致窗口建不出来。后台 /models 与「刷新模型」按钮负责拉取。
 func clineFullModelListText() string {
-	ensureClineModels()
 	return strings.Join(clineFreeModelIDs(), "\r\n")
 }
 
