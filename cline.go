@@ -1057,14 +1057,32 @@ func (g *gateway) handleClineChat(ctx context.Context, params map[string]any, pa
 
 	clineBumpUsage(acc)
 
-	// 流式响应：通过 liveResponse 传递给 streamResponse 处理
+	// 流式响应：Cline API 不发 finish_reason / [DONE] 终止标记，
+	// 用 pipe 包装，在流结束时注入标准终止标记。
 	if stream {
-		ctx, cancel := context.WithCancel(context.Background())
-		_ = ctx // 仅用于构造 cancel func
+		pr, pw := io.Pipe()
+		go func() {
+			defer pw.Close()
+			buf := make([]byte, 32<<10)
+			for {
+				n, readErr := resp.Body.Read(buf)
+				if n > 0 {
+					pw.Write(buf[:n])
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			resp.Body.Close()
+			// 注入标准终止标记，确保客户端正确识别流结束
+			pw.Write([]byte("data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n"))
+			pw.Write([]byte("data: [DONE]\n\n"))
+		}()
+
 		return &gatewayResponse{
 			status: http.StatusOK,
 			header: resp.Header,
-			live:   &liveResponse{response: resp, cancel: cancel},
+			live:   &liveResponse{response: &http.Response{Body: pr, Header: resp.Header}, cancel: func() { pr.Close() }},
 		}, nil
 	}
 
