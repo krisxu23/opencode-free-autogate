@@ -1068,9 +1068,10 @@ func (g *gateway) handleClineChat(ctx context.Context, params map[string]any, pa
 // clineFreeModels 是 Cline 支持的免费模型清单。所有模型名带 cline/ 前缀，
 // 网关据此区分 Cline 上游与 zen 上游（zen 也有 deepseek 等同名模型）。
 var clineFreeModels = []string{
-	"cline/deepseek-v4-flash",
-	"cline/deepseek-v4-pro",
+	"cline/deepseek/deepseek-v4-flash",
+	"cline/deepseek/deepseek-v4-pro",
 	"cline/openai/gpt-4.1-nano",
+	"cline/openai/gpt-4.1-mini",
 	"cline/qwen/qwen3-235b-a22b",
 	"cline/meta-llama/llama-4-maverick",
 	"cline/google/gemini-2.5-flash",
