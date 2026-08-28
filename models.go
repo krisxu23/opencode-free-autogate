@@ -191,15 +191,27 @@ func (g *gateway) modelIDs(ctx context.Context) []string {
 
 func (g *gateway) modelsResponse(ctx context.Context) *gatewayResponse {
 	ids := g.modelIDs(ctx)
+	// 合并 Cline 免费模型（带 cline/ 前缀），使网关 /v1/models 一次性返回
+	// opencode + cline 两类上游的模型，客户端无需分别请求。
+	ensureClineModels()
+	clineModels := clineFreeModelIDs()
+	all := make([]string, 0, len(ids)+len(clineModels))
+	all = append(all, ids...)
+	all = append(all, clineModels...)
+	sort.Strings(all)
 
 	created := time.Now().Unix()
-	models := make([]map[string]any, 0, len(ids))
-	for _, id := range ids {
+	models := make([]map[string]any, 0, len(all))
+	for _, id := range all {
+		ownedBy := g.cfg.project.ownedBy
+		if strings.HasPrefix(id, "cline/") {
+			ownedBy = "cline"
+		}
 		models = append(models, map[string]any{
 			"id":       id,
 			"object":   "model",
 			"created":  created,
-			"owned_by": g.cfg.project.ownedBy,
+			"owned_by": ownedBy,
 		})
 	}
 	body, _ := json.Marshal(map[string]any{"object": "list", "data": models})

@@ -66,6 +66,13 @@ func main() {
 	gw := newGateway(cfg)
 	handler := &app{gateway: gw}
 
+	// 后台拉取 Cline 免费模型（有账号时），使 /v1/models 与 GUI 模型列表
+	// 在启动后尽快带上 Cline 上游模型。
+	go func() {
+		time.Sleep(2 * time.Second)
+		refreshClineModels()
+	}()
+
 	rootContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	gw.start(rootContext)

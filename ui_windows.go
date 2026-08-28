@@ -351,6 +351,11 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 											dcl.PushButton{Text: "刷新列表", Font: uiFont, OnClicked: func() {
 												ui.refreshClineAccounts()
 											}},
+											dcl.PushButton{Text: "刷新模型", Font: uiFont, OnClicked: func() {
+												go refreshClineModels()
+												time.Sleep(500 * time.Millisecond)
+												ui.clineModelsEdit.SetText(clineModelListText())
+											}},
 											dcl.HSpacer{},
 										},
 									},
