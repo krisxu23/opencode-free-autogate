@@ -1056,20 +1056,12 @@ func (g *gateway) handleClineChat(ctx context.Context, params map[string]any, pa
 
 	clineBumpUsage(acc)
 
-	// 流式响应
+	// 流式响应：通过 liveResponse 传递给 streamResponse 处理
 	if stream {
 		return &gatewayResponse{
 			status: http.StatusOK,
-			header: http.Header{
-				"Content-Type":      {"text/event-stream"},
-				"Cache-Control":     {"no-cache"},
-				"Connection":        {"keep-alive"},
-				"X-Accel-Buffering": {"no"},
-			},
-			body: resp.Body,
-			finish: func() {
-				resp.Body.Close()
-			},
+			header: resp.Header,
+			live:   &liveResponse{response: resp, cancel: func() { resp.Body.Close() }},
 		}, nil
 	}
 

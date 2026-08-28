@@ -644,7 +644,7 @@ func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace
 			a.gateway.usage.Observe(m, us.PromptTokens, us.CompletionTokens, us.CachedTokens)
 		}
 	}
-	if guard.Committed() {
+	if guard != nil && guard.Committed() {
 		// 响应头已提前提交，状态码无法再改变：赢家流透传，其余转为 SSE 错误事件。
 		writeCommittedStream(w, r, response, a.gateway.cfg.streamIdle, observe, hyg)
 		return
