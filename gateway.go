@@ -22,6 +22,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	utls "github.com/metacubex/utls"
 )
 
 var (
@@ -1154,10 +1156,53 @@ func requestTransport(proxyURL *url.URL, dialTimeout time.Duration, tlsInsecure 
 			InsecureSkipVerify: tlsInsecure,
 		},
 	}
-	if proxyURL != nil {
+	// 直连时使用 uTLS 模拟 Chrome 指纹，让网关的 TLS 握手外观与 Chrome 一致。
+	// 经代理时不替换：代理负责上游 TLS，我们只与代理协商。
+	if proxyURL == nil {
+		transport.DialTLSContext = utlsDialContext(dialTimeout, tlsInsecure)
+	} else {
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
 	return transport
+}
+
+// utlsDialContext 返回一个自定义的 TLS 拨号函数，使用 uTLS 模拟 Chrome 的 TLS 指纹。
+// 这使得网关的 TLS ClientHello 看起来像 Chrome 浏览器，而不是 Go 标准库。
+func utlsDialContext(dialTimeout time.Duration, tlsInsecure bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := &net.Dialer{
+		Timeout:   dialTimeout,
+		KeepAlive: 30 * time.Second,
+	}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// 1. 建立 TCP 连接
+		conn, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+
+		// 2. 从 addr 中提取 hostname（用于 SNI）
+		hostname, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+
+		// 3. 用 uTLS 包装 TCP 连接，模拟 Chrome 的 TLS 指纹
+		utlsConfig := &utls.Config{
+			ServerName:         hostname,
+			InsecureSkipVerify: tlsInsecure,
+			MinVersion:         utls.VersionTLS12,
+		}
+		uConn := utls.UClient(conn, utlsConfig, utls.HelloChrome_Auto)
+
+		// 4. 执行 TLS 握手
+		if err := uConn.Handshake(); err != nil {
+			uConn.Close()
+			return nil, err
+		}
+
+		return uConn, nil
+	}
 }
 
 // rotateToTail 把 items[i] 原地挪到队尾并保持其余元素的相对顺序。

@@ -65,6 +65,8 @@ type gatewayUI struct {
 	budget        *walk.NumberEdit
 	absorbCheck   *walk.CheckBox   // 吸收模式开关
 	absorbAttempt *walk.NumberEdit // 吸收模式最大尝试次数
+	clineAccountEdit *walk.TextEdit // Cline 账号列表
+	clineModelsEdit  *walk.TextEdit // Cline 模型列表
 	deepProbe     *walk.NumberEdit
 	probeConc     *walk.NumberEdit // 检测并发路数（初检/深检共用）
 	probeModelBox *walk.ComboBox
@@ -319,6 +321,65 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 								MinSize:  dcl.Size{Height: 320},
 								Font:     monoFont,
 							},
+						},
+					},
+
+					{
+						Title:  "Cline",
+						Layout: dcl.VBox{Spacing: 8},
+						Children: []dcl.Widget{
+							dcl.GroupBox{
+								Title:  "Cline 账号管理",
+								Font:   uiFont,
+								Layout: dcl.VBox{Spacing: 6},
+								Children: []dcl.Widget{
+									dcl.Label{Text: "Cline 免费模型通过 OAuth 账号访问。点击「导入账号」添加 Cline 账号。"},
+									dcl.TextEdit{
+										AssignTo: &ui.clineAccountEdit,
+										ReadOnly: true,
+										VScroll:  true,
+										MinSize:  dcl.Size{Height: 200},
+										Font:     monoFont,
+										Text:     "正在加载…",
+									},
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.PushButton{Text: "导入账号 (OAuth)", Font: uiFont, OnClicked: func() {
+												go ui.clineImportAccount()
+											}},
+											dcl.PushButton{Text: "刷新列表", Font: uiFont, OnClicked: func() {
+												ui.refreshClineAccounts()
+											}},
+											dcl.HSpacer{},
+										},
+									},
+								},
+							},
+							dcl.GroupBox{
+								Title:  "Cline 可用模型",
+								Font:   uiFont,
+								Layout: dcl.VBox{Spacing: 6},
+								Children: []dcl.Widget{
+									dcl.TextEdit{
+										AssignTo: &ui.clineModelsEdit,
+										ReadOnly: true,
+										VScroll:  true,
+										MinSize:  dcl.Size{Height: 120},
+										Font:     monoFont,
+										Text: `deepseek/deepseek-v4-flash
+deepseek/deepseek-v4-pro
+openai/gpt-4.1-nano
+qwen/qwen3-235b-a22b
+meta-llama/llama-4-maverick
+google/gemini-2.5-flash`,
+									},
+									dcl.PushButton{Text: "复制全部模型名", Font: uiFont, OnClicked: func() {
+										ui.copyText(ui.clineModelsEdit.Text(), "Cline 模型列表")
+									}},
+								},
+							},
+							dcl.Label{Text: "提示：在客户端使用时，Model 字段填上述模型名即可。网关会自动识别 Cline 模型并走 Cline 上游。"},
 						},
 					},
 				},
@@ -813,4 +874,46 @@ func restartEnv() []string {
 		kept = append(kept, entry)
 	}
 	return kept
+}
+
+// ── Cline 页面辅助函数 ──────────────────────────────────────────────────────
+
+// refreshClineAccounts 刷新 Cline 账号列表显示。
+func (ui *gatewayUI) refreshClineAccounts() {
+	accounts := clineListAccounts()
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("共 %d 个账号\r\n\r\n", len(accounts)))
+	for i, acc := range accounts {
+		statusIcon := "●"
+		switch acc.Status {
+		case "active":
+			statusIcon = "🟢"
+		case "cooldown":
+			statusIcon = "🟡"
+		case "expired":
+			statusIcon = "🔴"
+		}
+		sb.WriteString(fmt.Sprintf("%d. %s %s\r\n", i+1, statusIcon, acc.Email))
+		sb.WriteString(fmt.Sprintf("   状态: %s  今日调用: %d  累计Token: %d\r\n",
+			acc.Status, acc.UsageCountToday, acc.TokensTotal))
+		if !acc.CooldownUntil.IsZero() && time.Now().Before(acc.CooldownUntil) {
+			sb.WriteString(fmt.Sprintf("   冷却至: %s\r\n", acc.CooldownUntil.Format("2006-01-02 15:04:05")))
+		}
+		sb.WriteString("\r\n")
+	}
+	if len(accounts) == 0 {
+		sb.WriteString("暂无账号。点击「导入账号」添加。\r\n")
+	}
+	ui.clineAccountEdit.SetText(sb.String())
+}
+
+// clineImportAccount 在后台执行 OAuth 导入流程。
+func (ui *gatewayUI) clineImportAccount() {
+	acc, err := clineAddAccountFromDeviceAuth()
+	if err != nil {
+		log.Printf("[Cline] 导入失败: %v", err)
+		return
+	}
+	log.Printf("[Cline] 账号导入成功: %s", acc.Email)
+	ui.refreshClineAccounts()
 }
