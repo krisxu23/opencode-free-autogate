@@ -172,6 +172,8 @@ func (g *gateway) modelUpstreamIDs(ctx context.Context) []string {
 }
 
 // modelIDs 返回对外展示的模型名列表（已排序），供 /v1/models 与界面共用。
+// 所有 opencode 模型名带 opencode/ 前缀，Cline 模型名带 cline/ 前缀，
+// 方便前端区分不同供应商。
 func (g *gateway) modelIDs(ctx context.Context) []string {
 	rename, _ := g.modelMaps(ctx)
 	unique := make(map[string]struct{}, len(rename)+len(g.cfg.project.extraModels))
@@ -183,7 +185,7 @@ func (g *gateway) modelIDs(ctx context.Context) []string {
 	}
 	ids := make([]string, 0, len(unique))
 	for id := range unique {
-		ids = append(ids, id)
+		ids = append(ids, "opencode/"+id)
 	}
 	sort.Strings(ids)
 	return ids
@@ -228,7 +230,12 @@ func (g *gateway) rewriteModelPayload(ctx context.Context, payload map[string]an
 	}
 	_, redirect := g.modelMaps(ctx)
 	model, _ := payload["model"].(string)
+	// 直接查找：兼容客户端发送不带前缀的原始模型名。
 	upstream, exists := redirect[model]
+	if !exists && strings.HasPrefix(model, "opencode/") {
+		// 带前缀：去掉 opencode/ 后再查 redirect（modelIDs 对外展示加了前缀）。
+		upstream, exists = redirect[strings.TrimPrefix(model, "opencode/")]
+	}
 	if !exists {
 		return false
 	}

@@ -68,7 +68,6 @@ type gatewayUI struct {
 	absorbCheck   *walk.CheckBox   // 吸收模式开关
 	absorbAttempt *walk.NumberEdit // 吸收模式最大尝试次数
 	clineAccountEdit *walk.TextEdit // Cline 账号列表
-	clineModelsEdit  *walk.TextEdit // Cline 模型列表
 	deepProbe     *walk.NumberEdit
 	probeConc     *walk.NumberEdit // 检测并发路数（初检/深检共用）
 	probeModelBox *walk.ComboBox
@@ -186,6 +185,14 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 										Children: []dcl.Widget{
 											dcl.PushButton{Text: "复制全部模型名", Font: uiFont, OnClicked: func() {
 												ui.copyText(ui.modelsEdit.Text(), "模型列表")
+											}},
+											dcl.PushButton{Text: "刷新 Cline 模型", Font: uiFont, OnClicked: func() {
+												go func() {
+													refreshClineModels()
+													ui.window.Synchronize(func() {
+														ui.modelsSeen = ""
+													})
+												}()
 											}},
 											dcl.HSpacer{},
 										},
@@ -367,35 +374,12 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 											dcl.PushButton{Text: "刷新列表", Font: uiFont, OnClicked: func() {
 												ui.refreshClineAccounts()
 											}},
-											dcl.PushButton{Text: "刷新模型", Font: uiFont, OnClicked: func() {
-												go refreshClineModels()
-												time.Sleep(500 * time.Millisecond)
-												ui.clineModelsEdit.SetText(clineModelListText())
-											}},
 											dcl.HSpacer{},
 										},
 									},
 								},
 							},
-							dcl.GroupBox{
-								Title:  "Cline 可用模型",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
-								Children: []dcl.Widget{
-									dcl.TextEdit{
-										AssignTo: &ui.clineModelsEdit,
-										ReadOnly: true,
-										VScroll:  true,
-										MinSize:  dcl.Size{Height: 160},
-										Font:     monoFont,
-										Text:     clineModelListText(),
-									},
-									dcl.PushButton{Text: "复制全部模型名", Font: uiFont, OnClicked: func() {
-										ui.copyText(ui.clineModelsEdit.Text(), "Cline 模型列表")
-									}},
-								},
-							},
-							dcl.Label{Text: "提示：Model 字段必须带 cline/ 前缀（如 cline/deepseek-v4-flash），网关据此走 Cline 上游。"},
+							dcl.Label{Text: "提示：Model 字段必须带 cline/ 前缀（如 cline/deepseek-deepseek-v4-flash），网关据此走 Cline 上游。"},
 						},
 					},
 				},
@@ -700,18 +684,36 @@ func (ui *gatewayUI) refreshStatus() {
 }
 
 // modelWatcher 后台定时拉取模型列表并同步到界面。
+// 显示格式：opencode 模型带 opencode/ 前缀，中间用分隔线与 Cline 模型隔开。
 func (ui *gatewayUI) modelWatcher() {
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		ids := ui.app.gateway.modelUpstreamIDs(ctx)
+		// modelUpstreamIDs 返回原始上游 ID（供深检模型下拉框使用）。
+		upstreamIDs := ui.app.gateway.modelUpstreamIDs(ctx)
+		// modelIDs 返回带 opencode/ 前缀的展示名（供列表文本使用）。
+		displayIDs := ui.app.gateway.modelIDs(ctx)
 		cancel()
-		if len(ids) > 0 {
-			text := strings.Join(ids, "\r\n")
+		if len(upstreamIDs) > 0 {
+			// 构建合并展示文本：opencode 模型 + 分隔线 + Cline 模型。
+			var sb strings.Builder
+			for _, id := range displayIDs {
+				sb.WriteString(id)
+				sb.WriteString("\r\n")
+			}
+			clineModels := clineFreeModelIDs()
+			if len(clineModels) > 0 {
+				sb.WriteString("──────────── Cline ────────────\r\n")
+				for _, id := range clineModels {
+					sb.WriteString(id)
+					sb.WriteString("\r\n")
+				}
+			}
+			text := sb.String()
 			if text != ui.modelsSeen {
 				ui.modelsSeen = text
 				ui.window.Synchronize(func() {
 					ui.modelsEdit.SetText(text)
-					ui.syncProbeModelBox(ids)
+					ui.syncProbeModelBox(upstreamIDs)
 				})
 			}
 		}
