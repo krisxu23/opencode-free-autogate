@@ -439,7 +439,7 @@ func (a *app) handlePost(w http.ResponseWriter, r *http.Request, path string, de
 	// 流式请求配备 SSE 保活：竞速迟迟未决时提前提交响应头并周期发送
 	// 注释行心跳，客户端（ZCode 等工具）不会因等不到响应头而误判断线。
 	var guard *sseGuard
-	if stream {
+	if stream && !a.gateway.cfg.absorbStreaming {
 		guard = newSseGuard(w)
 	}
 	var response *gatewayResponse
@@ -649,6 +649,10 @@ func ensureStream(payload map[string]any) bool {
 }
 
 func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace, response *gatewayResponse, err error, guard *sseGuard) {
+	// 确保 sseGuard 心跳已停止，防止与后续写入交叉。
+	if guard != nil {
+		guard.Finish()
+	}
 	if err != nil {
 		if r.Context().Err() != nil {
 			return
