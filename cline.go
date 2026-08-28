@@ -994,6 +994,13 @@ func (g *gateway) handleClineChat(ctx context.Context, params map[string]any, pa
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("HTTP-Referer", "https://cline.bot")
 	req.Header.Set("X-Title", "Cline")
+	req.Header.Set("User-Agent", "Cline/3.8.0 VSCode/1.93.1")
+	req.Header.Set("X-PLATFORM", "vscode")
+	req.Header.Set("X-PLATFORM-VERSION", "1.93.1")
+	req.Header.Set("X-CLIENT-TYPE", "vscode")
+	req.Header.Set("X-CLIENT-VERSION", "3.8.0")
+	req.Header.Set("X-CORE-VERSION", "3.8.0")
+	req.Header.Set("X-IS-MULTIROOT", "false")
 
 	log.Printf("[Cline] account=%s model=%s stream=%v", acc.Email, body["model"], stream)
 
