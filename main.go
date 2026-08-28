@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"strconv"
@@ -99,6 +100,19 @@ func main() {
 			}
 		}()
 		if err := runUI(handler, settings, settingsPath, stop); err != nil {
+			// Walk 框架 TTM_ADDTOOL 在特定 Windows 配置下首次进程启动时失败，
+			// 导致窗口建不出来。自动重启自身进程（带 DSH_RESTARTED 标记防无限循环）。
+			if os.Getenv("DSH_RESTARTED") == "" {
+				log.Printf("[门] 窗口创建失败，自动重启: %v", err)
+				cmd := exec.Command(os.Args[0], os.Args[1:]...)
+				cmd.Env = append(os.Environ(), "DSH_RESTARTED=1")
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				cmd.Stdin = os.Stdin
+				if startErr := cmd.Start(); startErr == nil {
+					os.Exit(0)
+				}
+			}
 			log.Printf("[门] 界面启动失败，退回控制台模式: %v", err)
 			select {
 			case <-rootContext.Done():
