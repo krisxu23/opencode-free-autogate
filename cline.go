@@ -229,12 +229,16 @@ func refreshClineToken(refreshToken string) (*clineRefreshResp, error) {
 		return nil, fmt.Errorf("cline refresh: %w", err)
 	}
 	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("cline refresh failed: %d", resp.StatusCode)
+		return nil, fmt.Errorf("cline refresh failed: %d %s", resp.StatusCode, truncateStr(string(respBody), 500))
 	}
 	var c clineRefreshResp
-	if err := json.NewDecoder(resp.Body).Decode(&c); err != nil {
-		return nil, fmt.Errorf("cline refresh decode: %w", err)
+	if err := json.Unmarshal(respBody, &c); err != nil {
+		return nil, fmt.Errorf("cline refresh decode: %w (body: %s)", err, truncateStr(string(respBody), 500))
+	}
+	if c.Data.AccessToken == "" {
+		return nil, fmt.Errorf("cline refresh returned empty accessToken (body: %s)", truncateStr(string(respBody), 500))
 	}
 	return &c, nil
 }
@@ -533,6 +537,7 @@ func clineRefreshAccountToken(acc *clineAccount) error {
 	acc.Status = "active"
 	saveClinePoolLocked()
 	clinePoolMu.Unlock()
+	log.Printf("[Cline] token refreshed for %s, expires=%d, accessTokenLen=%d", acc.Email, acc.ExpiresAt, len(acc.AccessToken))
 	return nil
 }
 
@@ -1001,7 +1006,9 @@ func (g *gateway) handleClineChat(ctx context.Context, params map[string]any, pa
 
 	// 401 → 刷新 Token 重试
 	if resp.StatusCode == http.StatusUnauthorized {
+		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		log.Printf("[Cline] 401 from API: %s", truncateStr(string(respBody), 300))
 		if err := clineRefreshAccountToken(acc); err == nil {
 			token = acc.AccessToken
 			req.Header.Set("Authorization", "Bearer "+token)
@@ -1011,8 +1018,9 @@ func (g *gateway) handleClineChat(ctx context.Context, params map[string]any, pa
 			}
 			defer resp.Body.Close()
 			if resp.StatusCode == http.StatusUnauthorized {
+				retryBody, _ := io.ReadAll(resp.Body)
 				return jsonGatewayResponse(http.StatusUnauthorized,
-					fmt.Sprintf("Cline account %s token expired", acc.Email)), nil
+					fmt.Sprintf("Cline account %s token expired: %s", acc.Email, truncateStr(string(retryBody), 300))), nil
 			}
 		} else {
 			return jsonGatewayResponse(http.StatusUnauthorized,
@@ -1034,6 +1042,7 @@ func (g *gateway) handleClineChat(ctx context.Context, params map[string]any, pa
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Printf("[Cline] API %d: %s", resp.StatusCode, truncateStr(string(bodyBytes), 500))
 		return jsonGatewayResponse(resp.StatusCode,
 			fmt.Sprintf("Cline API %d: %s", resp.StatusCode, truncateStr(string(bodyBytes), 500))), nil
 	}
