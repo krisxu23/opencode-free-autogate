@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/signal"
 	"runtime"
 	"strconv"
@@ -40,6 +41,15 @@ func main() {
 
 	settingsPath := configPath()
 	settings := loadSettings(settingsPath)
+	// 首次运行无 config.json 时自动保存默认配置（含随机生成的 Key），
+	// 确保后续启动复用同一个 Key。
+	if _, err := os.Stat(settingsPath); os.IsNotExist(err) {
+		if saveErr := settings.save(settingsPath); saveErr != nil {
+			log.Printf("[配置] 自动保存默认配置失败: %v", saveErr)
+		} else {
+			log.Printf("[配置] 首次运行，已生成 config.json（Key: %s）", settings.GatewayKey)
+		}
+	}
 	// config.json 在 GUI 与控制台两种模式下都生效（行为一致）；
 	// 已显式导出的环境变量仍然优先，不会被配置文件覆盖。
 	settings.applyEnv()
@@ -171,7 +181,7 @@ func logStartup(cfg config) {
 	if cfg.project.gatewayAuth {
 		state := "未启用（任何人可访问）"
 		if cfg.gatewayKey != "" {
-			state = "已启用 GATEWAY_KEY"
+			state = cfg.gatewayKey
 		}
 		log.Printf("[门] 认证:      %s", state)
 	}
