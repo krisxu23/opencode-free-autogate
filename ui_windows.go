@@ -10,9 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/lxn/walk"
 	dcl "github.com/lxn/walk/declarative"
@@ -85,6 +87,20 @@ var outboundChoices = []string{"走代理（失败自动直连兜底）", "仅�
 func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func()) error {
 	ui := &gatewayUI{app: handler, settings: settings, path: path, shutdownOnce: shutdown}
 	ui.start = time.Now()
+
+	// 强制绑定到当前 OS 线程：Walk 的 initWindowWithCfg 内部也会调用
+	// runtime.LockOSThread()，但那是在 CreateWindowEx 之前才执行的 atomic
+	// 分支里——如果 Go 调度器在此之前把 goroutine 调走，后续 Win32 调用可能
+	// 在错误的线程上执行，导致 TTM_ADDTOOL 等消息失败。
+	runtime.LockOSThread()
+
+	// 预注册 Common Controls（含 tooltip 类）：Walk 的 initWindowWithCfg 调用
+	// InitCommonControlsEx 时缺少 ICC_STANDARD_CLASSES，导致 tooltip 子类化
+	// 在首次进程启动时 TTM_ADDTOOL 失败。提前注册可绕过此问题。
+	var icc win.INITCOMMONCONTROLSEX
+	icc.DwSize = uint32(unsafe.Sizeof(icc))
+	icc.DwICC = 0x00004000 // ICC_STANDARD_CLASSES
+	win.InitCommonControlsEx(&icc)
 
 	outboundIndex := 1
 	if settings.Outbound == outboundProxy {
