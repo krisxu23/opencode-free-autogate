@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	configFileName    = "config.json"
+	configFileName = "config.json"
 
 	outboundProxy  = "proxy"
 	outboundDirect = "direct"
@@ -62,8 +62,8 @@ type uiSettings struct {
 	// 每供应商节点池出口开关（节点池本身是全局资源，见 PoolEnabled/PoolInput）：
 	// OpenCode 用反向字段保持旧 config.json 兼容——缺省 false = 走池（既有行为）；
 	// Cline 缺省 false = 直连（既有行为），开 = 加入多 IP 轮询出口 + 直连兜底。
-	OpenCodePoolOff bool `json:"opencode_pool_off"`
-	ClinePoolEnabled bool `json:"cline_pool_enabled"`
+	OpenCodePoolOff  bool   `json:"opencode_pool_off"`
+	ClinePoolEnabled bool   `json:"cline_pool_enabled"`
 	PreferredRegions string `json:"preferred_regions"` // 地区偏好（逗号分隔国家码，空 = 不偏好）
 }
 

@@ -27,11 +27,11 @@ import (
 // 让 [全局熔断]/[流截断] 这类关键行留得住。
 
 const (
-	logFileMaxSize  = 10 << 20   // 单个日志文件上限，超过轮转
-	logFileBackups  = 5          // 保留的历史日志份数
-	logFloodPerSec  = 50         // 每秒最多放行的行数，超出丢弃
-	logDupWindow    = 5 * time.Second   // 相同日志的合并窗口
-	logDupSummaryIn = 2 * time.Second   // 合并统计的最长汇报延迟
+	logFileMaxSize  = 10 << 20        // 单个日志文件上限，超过轮转
+	logFileBackups  = 5               // 保留的历史日志份数
+	logFloodPerSec  = 50              // 每秒最多放行的行数，超出丢弃
+	logDupWindow    = 5 * time.Second // 相同日志的合并窗口
+	logDupSummaryIn = 2 * time.Second // 合并统计的最长汇报延迟
 )
 
 var (

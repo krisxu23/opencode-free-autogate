@@ -41,9 +41,9 @@ func TestObserveQuotaBurnLongBench(t *testing.T) {
 func TestProbeBodyShape(t *testing.T) {
 	gw := newGateway(config{})
 	var parsed struct {
-		Model     string               `json:"model"`
-		MaxTokens int                  `json:"max_tokens"`
-		Stream    bool                 `json:"stream"`
+		Model     string              `json:"model"`
+		MaxTokens int                 `json:"max_tokens"`
+		Stream    bool                `json:"stream"`
 		Messages  []map[string]string `json:"messages"`
 	}
 	if err := json.Unmarshal(gw.probeBody(), &parsed); err != nil {
