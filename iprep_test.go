@@ -40,19 +40,96 @@ func TestIPRiskCheckAndCache(t *testing.T) {
 	r := newIPReputer(nil)
 	fetches := 0
 	r.fetch = func(url string) (int, string, error) {
-		fetches++
-		if !strings.Contains(url, "iprisk.top/ip/1.2.3.4") {
-			return 0, "", fmt.Errorf("unexpected url %s", url)
+		if strings.Contains(url, "iprisk.top") {
+			fetches++ // 只数 iprisk 页面抓取
+			return 200, sampleIPRiskHTML, nil
 		}
-		return 200, sampleIPRiskHTML, nil
+		return 503, "", fmt.Errorf("unexpected url %s", url) // 其余源不可用
 	}
 	r.process("1.2.3.4:1080")
-	if r.cache["1.2.3.4:1080"] == nil {
-		t.Fatal("结果应写入缓存")
+	if r.cache["1.2.3.4"] == nil {
+		t.Fatal("结果应按 IP 写入缓存")
 	}
 	r.process("1.2.3.4:1080")
 	if fetches != 1 {
-		t.Fatalf("缓存期内不应重复抓取，实际 %d 次", fetches)
+		t.Fatalf("缓存期内不应重复抓取 iprisk 页面，实际 %d 次", fetches)
+	}
+}
+
+// Blackbox 信号 → 评分映射：脏代理重罚，干净机房轻罚。
+func TestBlackboxScore(t *testing.T) {
+	dirty := &blackboxResp{
+		Classification: "vpn",
+		Signals: struct {
+			Bogon     bool `json:"bogon"`
+			Cloud     bool `json:"cloud"`
+			Hosting   bool `json:"hosting"`
+			Proxy     bool `json:"proxy"`
+			Spamhaus  bool `json:"spamhaus"`
+			Tor       bool `json:"tor"`
+			SfsListed bool `json:"sfs_listed"`
+		}{Hosting: true, Proxy: true, Spamhaus: true, SfsListed: true},
+		Suspicious: true,
+	}
+	if got := blackboxScore(dirty); got > 20 {
+		t.Fatalf("脏代理应重罚到 D 档，得到 %d", got)
+	}
+	clean := &blackboxResp{Signals: struct {
+		Bogon     bool `json:"bogon"`
+		Cloud     bool `json:"cloud"`
+		Hosting   bool `json:"hosting"`
+		Proxy     bool `json:"proxy"`
+		Spamhaus  bool `json:"spamhaus"`
+		Tor       bool `json:"tor"`
+		SfsListed bool `json:"sfs_listed"`
+	}{Hosting: true}}
+	if got := blackboxScore(clean); got != 90 {
+		t.Fatalf("干净机房应 90（仅轻罚），得到 %d", got)
+	}
+}
+
+// iprisk 外壳页（新 IP 无缓存结果）：静默跳过，不计故障，Blackbox 分数生效。
+func TestIPRiskShellSkip(t *testing.T) {
+	r := newIPReputer(nil)
+	r.fetch = func(url string) (int, string, error) {
+		if strings.Contains(url, "iprisk.top") {
+			return 200, "<title>IP纯净度检测与IP风险查询 | IPRisk</title>", nil // 外壳
+		}
+		return 200, `{"classification":"hosting","signals":{"hosting":true},"asn":{"number":24940,"name":"Hetzner"}}`, nil
+	}
+	r.process("1.2.3.4:1080")
+	res := r.cache["1.2.3.4"]
+	if res == nil {
+		t.Fatal("Blackbox 层应产出结果")
+	}
+	if res.Score != 90 || res.Source != "blackbox" {
+		t.Fatalf("应仅 Blackbox 计分: %+v", res)
+	}
+	if r.available() {
+		// 外壳不计故障：退避不应触发（5 次以内）
+	}
+}
+
+// 同 IP 多端口：只体检一次，各端口槽位共享结果。
+func TestIPKeyedDedup(t *testing.T) {
+	r := newIPReputer(nil)
+	fetches := 0
+	sinks := 0
+	r.fetch = func(url string) (int, string, error) {
+		if strings.Contains(url, "iprisk.top") {
+			fetches++
+		}
+		return 200, sampleIPRiskHTML, nil
+	}
+	r.sink = func(addr string, res *ipRepResult) { sinks++ }
+	r.process("118.145.128.100:44104")
+	r.process("118.145.128.100:44230")
+	r.process("118.145.128.100:44244")
+	if fetches != 1 {
+		t.Fatalf("同 IP 应只抓取 1 次 iprisk 页面，实际 %d", fetches)
+	}
+	if sinks != 3 {
+		t.Fatalf("三个端口槽位都应收到标签，实际 %d", sinks)
 	}
 }
 
@@ -121,11 +198,12 @@ func TestPrivateSkipNoFetch(t *testing.T) {
 		fetches++
 		return 200, sampleIPRiskHTML, nil
 	}
+	r.exitURLs = func() []*url.URL { return nil }
 	r.process("127.0.0.1:21004")
 	if fetches != 0 {
-		t.Fatalf("回环地址不应发起抓取，实际 %d 次", fetches)
+		t.Fatalf("回环地址不应发起任何源查询，实际 %d 次", fetches)
 	}
-	if r.cache["127.0.0.1:21004"] != nil {
+	if r.cache["1.2.3.4"] != nil && r.cache["127.0.0.1"] != nil {
 		t.Fatal("回环地址不应写缓存")
 	}
 	if !r.available() {
@@ -138,9 +216,11 @@ func TestOriginHostMapping(t *testing.T) {
 	r := newIPReputer(nil)
 	fetches := 0
 	r.fetch = func(url string) (int, string, error) {
-		fetches++
-		if !strings.Contains(url, "iprisk.top/ip/203.0.113.10") {
-			return 0, "", fmt.Errorf("应查真实出口 IP，得到 %s", url)
+		if strings.Contains(url, "iprisk.top") {
+			fetches++
+			if !strings.Contains(url, "iprisk.top/ip/203.0.113.10") {
+				t.Fatalf("应查真实出口 IP，得到 %s", url)
+			}
 		}
 		return 200, sampleIPRiskHTML, nil
 	}
@@ -151,7 +231,7 @@ func TestOriginHostMapping(t *testing.T) {
 		return ""
 	}
 	r.process("127.0.0.1:21004")
-	res := r.cache["127.0.0.1:21004"]
+	res := r.cache["203.0.113.10"] // 缓存按解析后的 IP 键
 	if res == nil {
 		t.Fatal("反查成功应写缓存")
 	}
@@ -233,5 +313,43 @@ func TestFetchPageNoExits(t *testing.T) {
 	status, _, err := r.fetchPage("http://x/ip/1.2.3.4")
 	if err != nil || status != 503 {
 		t.Fatalf("无出口应透传直连结果: %d %v", status, err)
+	}
+}
+
+// ipapi.is 第二意见：abuser/proxy 标志扣分，且独立于 Blackbox。
+func TestIPAPIISSecondOpinion(t *testing.T) {
+	r := newIPReputer(nil)
+	r.fetch = func(url string) (int, string, error) {
+		if strings.Contains(url, "ipapi.is") {
+			return 200, `{"is_datacenter":true,"is_proxy":true,"is_vpn":false,"is_abuser":true,"is_tor":false,"cc":"HK","asn_num":132203,"asn_org":"Tencent"}`, nil
+		}
+		return 503, "", nil // Blackbox 不可用
+	}
+	r.process("1.2.3.4:1080")
+	res := r.cache["1.2.3.4"]
+	if res == nil {
+		t.Fatal("ipapi.is 应独立产出结果")
+	}
+	if res.Score != 55 || res.Grade != "C" {
+		t.Fatalf("abuser35+proxy10=45 扣分应得 55/C，得到 %d/%s", res.Score, res.Grade)
+	}
+	if res.Region != "HK" || res.ASN != "AS132203 Tencent" {
+		t.Fatalf("应填充地区/ASN: %+v", res)
+	}
+}
+
+// 三层评分解析：新格式标题/正文兜底。
+func TestParseIPRiskLayered(t *testing.T) {
+	if v, err := parseIPRiskScore("<title>x IP风险查询：50/100 · 数据中心</title>"); err != nil || v != 50 {
+		t.Fatalf("标题层应得 50: %v %v", v, err)
+	}
+	if v, err := parseIPRiskScore("<div>纯净度评分 | 50/100</div>"); err != nil || v != 50 {
+		t.Fatalf("新格式层应得 50: %v %v", v, err)
+	}
+	if v, err := parseIPRiskScore("<div>评分为 77/100 的结果</div>"); err != nil || v != 77 {
+		t.Fatalf("评分为层应得 77: %v %v", v, err)
+	}
+	if v, err := parseIPRiskScore("<html>正文里出现 63/100 字样</html>"); err != nil || v != 63 {
+		t.Fatalf("任意 N/100 兜底层应得 63: %v %v", v, err)
 	}
 }

@@ -39,9 +39,9 @@ type exitStat struct {
 type benchSource uint8
 
 const (
-	benchNone         benchSource = iota
-	benchHeuristic                // 推断值：允许探活提前回归
-	benchAuthoritative            // 上游声明值：不主动探，等真实胜出或到期
+	benchNone          benchSource = iota
+	benchHeuristic                 // 推断值：允许探活提前回归
+	benchAuthoritative             // 上游声明值：不主动探，等真实胜出或到期
 )
 
 func benchSourceName(s benchSource) string {
@@ -140,19 +140,13 @@ func (t *exitTracker) observeRep(addr string, res *ipRepResult) {
 	s.repASN = res.ASN
 }
 
-// repTier 信誉分级转排序档位：A 最先、D 最后；未体检 = B 档（中性），
-// 不因没体检而吃亏也不占优。
-func (s *exitStat) repTier() int {
-	switch {
-	case s.repScore >= 85:
-		return 0
-	case s.repScore >= 70, s.repScore < 0:
-		return 1
-	case s.repScore >= 55:
-		return 2
-	default:
-		return 3
+// repSortKey 信誉排序键：原始分数降序（95 优于 92 优于 55，比 A/B/C/D
+// 四档更细，档位仅用于展示）。未体检 = 50（中性），不占优也不吃亏。
+func (s *exitStat) repSortKey() int {
+	if s.repScore < 0 {
+		return 50
 	}
+	return s.repScore
 }
 
 // regionTier 地区偏好档位：未设偏好全部同级；命中偏好最先，未知居中，
@@ -356,14 +350,14 @@ func (t *exitTracker) rank(exits []slot, preferred map[string]struct{}) []slot {
 		s := t.stats[candidate.addr]
 		if s == nil {
 			// 未记账出口：地区按未知、信誉按中性档（1），不占优也不吃亏。
-			items = append(items, item{exit: candidate, region: regionTierNil(preferred), rep: 1})
+			items = append(items, item{exit: candidate, region: regionTierNil(preferred), rep: 50})
 			continue
 		}
 		items = append(items, item{
 			exit:   candidate,
 			trunc:  s.truncations,
 			region: s.regionTier(preferred),
-			rep:    s.repTier(),
+			rep:    s.repSortKey(),
 			lat:    s.latency,
 			known:  s.seen,
 		})
@@ -376,7 +370,7 @@ func (t *exitTracker) rank(exits []slot, preferred map[string]struct{}) []slot {
 			return items[i].region < items[j].region
 		}
 		if items[i].rep != items[j].rep {
-			return items[i].rep < items[j].rep
+			return items[i].rep > items[j].rep // 分数高者优先
 		}
 		if items[i].known != items[j].known {
 			return items[i].known
