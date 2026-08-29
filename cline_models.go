@@ -29,7 +29,7 @@ type clineCachedModels struct {
 
 var (
 	clineModelMu    sync.Mutex
-	clineModelList  []string // 带 cline/ 前缀，线程安全读取
+	clineModelList  []string  // 带 cline/ 前缀，线程安全读取
 	clineModelParse time.Time // 上次拉取成功时刻（防止每次请求都重复拉）
 	clineModelPath  string
 )

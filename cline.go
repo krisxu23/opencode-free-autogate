@@ -20,10 +20,10 @@ import (
 // ── WorkOS / Cline OAuth constants ────────────────────────────────────────────
 
 const (
-	clineWorkosClientID       = "client_01K3A541FN8TA3EPPHTD2325AR"
-	clineWorkosDeviceAuthURL  = "https://api.workos.com/user_management/authorize/device"
+	clineWorkosClientID        = "client_01K3A541FN8TA3EPPHTD2325AR"
+	clineWorkosDeviceAuthURL   = "https://api.workos.com/user_management/authorize/device"
 	clineWorkosAuthenticateURL = "https://api.workos.com/user_management/authenticate"
-	clineAPIBase              = "https://api.cline.bot/api/v1"
+	clineAPIBase               = "https://api.cline.bot/api/v1"
 )
 
 // ── HTTP client (reused across all Cline API calls) ──────────────────────────
@@ -54,7 +54,7 @@ var clineChatClient = &http.Client{
 var clineUpstreamBase = clineAPIBase
 
 // clineMaxExitAttempts 是启用节点池后单次聊天最多尝试的池出口数
-//（直连兜底不计入）：Cline 请求短平快，逐出口串行试太多次反而拖慢首字。
+// （直连兜底不计入）：Cline 请求短平快，逐出口串行试太多次反而拖慢首字。
 const clineMaxExitAttempts = 3
 
 // clineExits 组装 Cline 聊天请求的出口序列。
@@ -421,10 +421,10 @@ type clineAccount struct {
 	LastUsed        time.Time `json:"lastUsed"`
 	UsageCount      int64     `json:"usageCount"`
 	UsageCountToday int64     `json:"usageCountToday"`
-	UsageDate       string    `json:"usageDate"`        // YYYY-MM-DD, auto-reset on day rollover
-	TokensTotal     int64     `json:"tokensTotal"`      // cumulative prompt+completion tokens
+	UsageDate       string    `json:"usageDate"`   // YYYY-MM-DD, auto-reset on day rollover
+	TokensTotal     int64     `json:"tokensTotal"` // cumulative prompt+completion tokens
 	TokensToday     int64     `json:"tokensToday"`
-	TokensDate      string    `json:"tokensDate"`       // YYYY-MM-DD for token counters
+	TokensDate      string    `json:"tokensDate"` // YYYY-MM-DD for token counters
 	CreatedAt       time.Time `json:"createdAt"`
 	CooldownUntil   time.Time `json:"cooldownUntil,omitempty"`
 	LastReason      string    `json:"lastReason,omitempty"`
@@ -1052,18 +1052,18 @@ func (g *gateway) handleClineChat(ctx context.Context, w http.ResponseWriter, pa
 	bodyJSON, _ := json.Marshal(body)
 
 	headers := http.Header{
-		"Authorization":     {"Bearer " + token},
-		"Content-Type":      {"application/json"},
-		"Accept":            {"text/event-stream"},
-		"HTTP-Referer":      {"https://cline.bot"},
-		"X-Title":           {"Cline"},
-		"User-Agent":        {"Cline/3.8.50"},
-		"X-CLIENT-TYPE":     {"opencode-autogate"},
-		"X-CLIENT-VERSION":  {"3.8.50"},
-		"X-PLATFORM":        {"win32"},
+		"Authorization":      {"Bearer " + token},
+		"Content-Type":       {"application/json"},
+		"Accept":             {"text/event-stream"},
+		"HTTP-Referer":       {"https://cline.bot"},
+		"X-Title":            {"Cline"},
+		"User-Agent":         {"Cline/3.8.50"},
+		"X-CLIENT-TYPE":      {"opencode-autogate"},
+		"X-CLIENT-VERSION":   {"3.8.50"},
+		"X-PLATFORM":         {"win32"},
 		"X-PLATFORM-VERSION": {"10.0"},
-		"X-CORE-VERSION":    {"3.8.50"},
-		"X-IS-MULTIROOT":    {"false"},
+		"X-CORE-VERSION":     {"3.8.50"},
+		"X-IS-MULTIROOT":     {"false"},
 	}
 
 	log.Printf("[Cline]%s account=%s model=%s stream=%v", trace.tagString(), acc.Email, body["model"], stream)

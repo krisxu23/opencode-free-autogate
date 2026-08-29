@@ -43,43 +43,47 @@ type gatewayUI struct {
 	settings uiSettings
 	path     string
 
-	banner        *walk.CustomWidget // 顶部自绘信息卡（应用名/运行时长/健康状态灯）
-	start         time.Time          // 界面启动时刻，用于运行时长显示
-	usageLabel    *walk.Label        // 今日用量统计行
-	usageText     string
-	statusLabel   *walk.Label
-	headline      *walk.Label
-	headlineText  string
-	headlineColor walk.Color
-	titleText     string
-	modelsEdit    *walk.TextEdit
-	logEdit       *walk.TextEdit
-	proxyEdit     *walk.TextEdit
-	mirrorEdit    *walk.TextEdit
-	poolCheck     *walk.CheckBox
-	poolEdit      *walk.TextEdit
-	raceCheck     *walk.CheckBox
-	raceWidth     *walk.NumberEdit // 竞速并发路数
-	poolLive      *walk.TextEdit
-	apiEdit       *walk.LineEdit
-	keyEdit       *walk.LineEdit
-	firstByte     *walk.NumberEdit
-	budget        *walk.NumberEdit
-	absorbCheck   *walk.CheckBox   // 吸收模式开关
-	absorbAttempt *walk.NumberEdit // 吸收模式最大尝试次数
-	clineAccountEdit *walk.TextEdit // Cline 账号列表
-	opencodePoolCheck *walk.CheckBox // OpenCode 供应商节点池出口开关
-	clinePoolCheck    *walk.CheckBox // Cline 供应商节点池出口开关
-	deepProbe     *walk.NumberEdit
-	probeConc     *walk.NumberEdit // 检测并发路数（初检/深检共用）
-	probeModelBox *walk.ComboBox
-	outboundBox   *walk.ComboBox
-	logCursor     int
-	modelsSeen    string
-	shownText     string
-	poolLiveText  string
-	statusText    string
-	shutdownOnce  func()
+	banner            *walk.CustomWidget // 顶部自绘信息卡（应用名/运行时长/健康状态灯）
+	start             time.Time          // 界面启动时刻，用于运行时长显示
+	usageLabel        *walk.Label        // 今日用量统计行
+	usageText         string
+	statusLabel       *walk.Label
+	headline          *walk.Label
+	headlineText      string
+	headlineColor     walk.Color
+	titleText         string
+	modelsEdit        *walk.TextEdit
+	logEdit           *walk.TextEdit
+	proxyEdit         *walk.TextEdit
+	mirrorEdit        *walk.TextEdit
+	poolCheck         *walk.CheckBox
+	poolEdit          *walk.TextEdit
+	raceCheck         *walk.CheckBox
+	raceWidth         *walk.NumberEdit // 竞速并发路数
+	poolLive          *walk.TextEdit
+	apiEdit           *walk.LineEdit
+	keyEdit           *walk.LineEdit
+	firstByte         *walk.NumberEdit
+	budget            *walk.NumberEdit
+	absorbCheck       *walk.CheckBox   // 吸收模式开关
+	absorbAttempt     *walk.NumberEdit // 吸收模式最大尝试次数
+	clineAccountEdit  *walk.TextEdit   // Cline 账号列表
+	opencodePoolCheck *walk.CheckBox   // OpenCode 供应商节点池出口开关
+	clinePoolCheck    *walk.CheckBox   // Cline 供应商节点池出口开关
+	regionEdit        *walk.LineEdit   // 地区偏好（US,JP,SG）
+	ipinfoEdit        *walk.LineEdit   // IPinfo token
+	abuseEdit         *walk.LineEdit   // AbuseIPDB key
+	dqsEdit           *walk.LineEdit   // Spamhaus DQS key
+	deepProbe         *walk.NumberEdit
+	probeConc         *walk.NumberEdit // 检测并发路数（初检/深检共用）
+	probeModelBox     *walk.ComboBox
+	outboundBox       *walk.ComboBox
+	logCursor         int
+	modelsSeen        string
+	shownText         string
+	poolLiveText      string
+	statusText        string
+	shutdownOnce      func()
 }
 
 var outboundChoices = []string{"走代理（失败自动直连兜底）", "仅直连"}
@@ -382,7 +386,48 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 										MinSize:  dcl.Size{Height: 96},
 									},
 								},
-							},							dcl.GroupBox{
+							}, dcl.GroupBox{
+								Title:  "IP 信誉体检（可选，只体检正式池节点，缓存 7 天）",
+								Font:   uiFont,
+								Layout: dcl.VBox{Spacing: 6},
+								Children: []dcl.Widget{
+									dcl.Label{Text: "数据源：AbuseIPDB（滥用举报）+ IPinfo（地区/ASN）+ Spamhaus DQS（黑名单）。缺哪个 key 就跳过哪个源；信誉只影响出场顺序，绝不单独剔除节点。"},
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.Label{Text: "地区偏好:"},
+											dcl.LineEdit{AssignTo: &ui.regionEdit, Text: settings.PreferredRegions, MinSize: dcl.Size{Width: 180}},
+											dcl.Label{Text: "逗号分隔国家码（如 US,JP,SG），留空不偏好；命中的出口优先出场"},
+											dcl.HSpacer{},
+										},
+									},
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.Label{Text: "IPinfo Token:"},
+											dcl.LineEdit{AssignTo: &ui.ipinfoEdit, Text: settings.IpinfoToken, MinSize: dcl.Size{Width: 260}},
+											dcl.HSpacer{},
+										},
+									},
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.Label{Text: "AbuseIPDB Key:"},
+											dcl.LineEdit{AssignTo: &ui.abuseEdit, Text: settings.AbuseIPDBKey, MinSize: dcl.Size{Width: 260}},
+											dcl.HSpacer{},
+										},
+									},
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.Label{Text: "Spamhaus DQS Key:"},
+											dcl.LineEdit{AssignTo: &ui.dqsEdit, Text: settings.SpamhausDQSKey, MinSize: dcl.Size{Width: 260}},
+											dcl.HSpacer{},
+										},
+									},
+								},
+							},
+							dcl.GroupBox{
 								Title:  "在线节点池",
 								Font:   uiFont,
 								Layout: dcl.VBox{Spacing: 6},
@@ -647,11 +692,14 @@ func (ui *gatewayUI) refreshPoolLive() {
 	} else {
 		lines := make([]string, 0, len(slots))
 		for _, s := range slots {
-			if ui.app.gateway.isManual(s.addr) {
-				lines = append(lines, s.addr+"　（手动，不自动移除）")
-			} else {
-				lines = append(lines, s.addr)
+			line := s.addr
+			if tag := ui.app.gateway.exits.repTag(s.addr); tag != "" {
+				line += "　" + tag
 			}
+			if ui.app.gateway.isManual(s.addr) {
+				line += "　（手动，不自动移除）"
+			}
+			lines = append(lines, line)
 		}
 		text = fmt.Sprintf("共 %d 个：\r\n%s", len(slots), strings.Join(lines, "\r\n"))
 	}
@@ -831,6 +879,10 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 	next.RaceWidth = int(ui.raceWidth.Value())
 	next.OpenCodePoolOff = !ui.opencodePoolCheck.Checked()
 	next.ClinePoolEnabled = ui.clinePoolCheck.Checked()
+	next.PreferredRegions = strings.TrimSpace(ui.regionEdit.Text())
+	next.IpinfoToken = strings.TrimSpace(ui.ipinfoEdit.Text())
+	next.AbuseIPDBKey = strings.TrimSpace(ui.abuseEdit.Text())
+	next.SpamhausDQSKey = strings.TrimSpace(ui.dqsEdit.Text())
 
 	proxies, proxyErrors := ParseProxyInput(next.ProxyInput)
 	mirrors, mirrorErrors := parseMirrorList(next.MirrorInput)
@@ -858,6 +910,21 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 	} else {
 		report.WriteString("并行竞速：关闭\r\n")
 	}
+	repSources := 0
+	if next.AbuseIPDBKey != "" {
+		repSources++
+	}
+	if next.IpinfoToken != "" {
+		repSources++
+	}
+	if next.SpamhausDQSKey != "" {
+		repSources++
+	}
+	fmt.Fprintf(&report, "IP 信誉体检：%d 个数据源已配置（正式池节点，缓存 7 天）", repSources)
+	if next.PreferredRegions != "" {
+		fmt.Fprintf(&report, "，地区偏好：%s", next.PreferredRegions)
+	}
+	report.WriteString("\r\n")
 	if next.OpenCodePoolOff {
 		report.WriteString("OpenCode 节点池出口：关闭（全部直连）\r\n")
 	} else {

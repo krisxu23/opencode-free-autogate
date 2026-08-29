@@ -57,10 +57,10 @@ type requestTrace struct {
 	finalProxy     string
 	finalStatus    int
 	upstream       string
-	winnerUpstream string // 竞速赢家实际使用的上游基址（完整 URL），供镜像记账
-	tag            string        // 日志关联标签（会话短标识）：并发请求/竞速尝试靠它归属
-	model          string        // 请求模型（收尾行展示）
-	firstByte      time.Duration // 响应头到达耗时；未知为 0（收尾行展示）
+	winnerUpstream string         // 竞速赢家实际使用的上游基址（完整 URL），供镜像记账
+	tag            string         // 日志关联标签（会话短标识）：并发请求/竞速尝试靠它归属
+	model          string         // 请求模型（收尾行展示）
+	firstByte      time.Duration  // 响应头到达耗时；未知为 0（收尾行展示）
 	usage          *usageSnapshot // 每请求 token 用量（收尾行展示）
 }
 
@@ -208,6 +208,8 @@ type gateway struct {
 	stickyWrites int                    // 插入计数：周期性强制清理过期项（见 stickyRemember）
 	deepRunning  atomic.Bool            // 深检轮重叠保护
 
+	iprep *ipReputer // IP 信誉体检（只体检正式池节点，结果供排序/展示）
+
 	lastStatus     atomic.Int32 // 最近一次请求的最终状态码，供界面健康色
 	lastTruncation atomic.Int64 // 最近一次流截断时刻（UnixNano），供界面健康色
 }
@@ -228,6 +230,9 @@ func newGateway(cfg config) *gateway {
 	usageObserver = func(model string, prompt, completion, cached int64) {
 		g.usage.Observe(model, prompt, completion, cached)
 	}
+	g.iprep = newIPReputer(cfg, func(addr string, res *ipRepResult) {
+		g.exits.observeRep(addr, res)
+	})
 	return g
 }
 
@@ -308,6 +313,21 @@ func (g *gateway) start(ctx context.Context) {
 	startWakeDetector(g, ctx)
 	// UA 版本跟随官方发版，防固定版本号成为识别特征。
 	startUASync(ctx)
+	// IP 信誉体检：worker + 启动补查正式池（手动节点 + 复检转正节点）。
+	g.iprep.start(ctx)
+	go func() {
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+		for _, addr := range g.slotAddresses(true) {
+			g.iprep.Request(addr)
+		}
+		for _, addr := range g.slotAddresses(false) {
+			g.iprep.Request(addr)
+		}
+	}()
 }
 
 func (g *gateway) refresh(ctx context.Context) {
@@ -431,6 +451,7 @@ func (g *gateway) fillSlots(ctx context.Context) error {
 		if g.addSlot(result.slot, false) {
 			added++
 			log.Printf("[探+] %s (%dms)", result.slot.addr, result.latency.Milliseconds())
+			g.iprep.Request(result.slot.addr)
 		}
 	}
 	log.Printf("[槽] %d/%d ready (added %d)", g.slotCount(), g.cfg.slotCount, added)
@@ -868,6 +889,8 @@ func (g *gateway) settleDeep(s slot, ok, hardFail bool) {
 				// 连接预热：转正时立即建立 TCP+TLS 连接并缓存到 transportPool，
 				// 确保第一个用户请求命中热连接，省掉冷启动的握手延迟。
 				go g.prewarmExit(s)
+				// IP 信誉体检：正式池节点转正即排队体检（7 天缓存，fail-open）。
+				g.iprep.Request(s.addr)
 			}
 		}
 		return
@@ -1636,7 +1659,7 @@ func (g *gateway) raceExits() []slot {
 		}
 	}
 	exits = g.exits.filterBenched(exits)
-	return g.exits.rank(exits)
+	return g.exits.rank(exits, g.cfg.preferredRegionSet())
 }
 
 // 对冲批次大小：首批少发保住指纹与配额，迟迟无人交付再加发。
@@ -2095,7 +2118,7 @@ func retryableStatus(status int) bool {
 }
 
 // isStreamContentType 判定响应是否为 SSE 流。空 Content-Type 不在此判定
-//（交由 validateStreamHead 按首段数据把关），其余非 event-stream 形态
+// （交由 validateStreamHead 按首段数据把关），其余非 event-stream 形态
 // （HTML 错误页、被忽略 stream 的 JSON）视为垃圾拦截。
 func isStreamContentType(contentType string) bool {
 	return strings.Contains(strings.ToLower(contentType), "text/event-stream")

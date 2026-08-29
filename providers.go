@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 // 供应商模型：网关目前有两个上游供应商。
 //
 // 参考 OmniRoute（provider→connection→api_key 三层）与 9router
@@ -27,4 +29,24 @@ func (c config) poolEnabledFor(provider string) bool {
 		return c.clinePoolEnabled
 	}
 	return !c.opencodePoolOff
+}
+
+// preferredRegions 解析地区偏好列表（"US, JP, SG"）成集合；未配置返回 nil，
+// 排序时地区档位全部同级（零开销）。
+func (c config) preferredRegionSet() map[string]struct{} {
+	raw := strings.TrimSpace(c.preferredRegions)
+	if raw == "" {
+		return nil
+	}
+	set := make(map[string]struct{})
+	for _, p := range strings.Split(raw, ",") {
+		p = strings.ToUpper(strings.TrimSpace(p))
+		if p != "" {
+			set[p] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
 }

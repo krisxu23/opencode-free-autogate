@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -25,6 +27,11 @@ type exitStat struct {
 	inFlight    int           // 在途租约数（对冲并发下防同一出口被集体压爆）
 	truncations int           // 累计空流/中途断流次数
 	truncAt     time.Time     // 最近一次流截断时刻：粘性短期回避该出口
+	// IP 信誉体检（iprep.go，只体检正式池节点，7 天缓存）：
+	repScore int    // 0-100；repUnknown(-1) = 未体检
+	repGrade string // A/B/C/D
+	region   string // 国家码（US/JP/...），地区偏好的依据
+	repASN   string // "AS9009 M247" 短形态，展示用
 }
 
 // benchSource 标记板凳的依据来源，决定能否被探活提前释放：
@@ -118,6 +125,67 @@ func (t *exitTracker) observeTruncation(addr string) {
 	s.truncations++
 	s.truncAt = time.Now()
 	t.failLocked(s)
+}
+
+// observeRep 落一次 IP 信誉体检结果：只写展示/排序字段，不参与失败
+// 记账——信誉是先验不是判决，坏信誉的出口仍然靠行为决定生死。
+func (t *exitTracker) observeRep(addr string, res *ipRepResult) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := t.statLocked(addr)
+	s.repScore = res.Score
+	s.repGrade = res.Grade
+	s.region = res.Region
+	s.repASN = res.ASN
+}
+
+// repTier 信誉分级转排序档位：A 最先、D 最后；未体检 = B 档（中性），
+// 不因没体检而吃亏也不占优。
+func (s *exitStat) repTier() int {
+	switch {
+	case s.repScore >= 80:
+		return 0
+	case s.repScore >= 55, s.repScore < 0:
+		return 1
+	case s.repScore >= 35:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// regionTier 地区偏好档位：未设偏好全部同级；命中偏好最先，未知居中，
+// 其余最后。
+func (s *exitStat) regionTier(preferred map[string]struct{}) int {
+	if len(preferred) == 0 {
+		return 0
+	}
+	if s.region == "" {
+		return 1
+	}
+	if _, ok := preferred[strings.ToUpper(s.region)]; ok {
+		return 0
+	}
+	return 2
+}
+
+// repTag 信誉信息的展示形态："US · B(72) · AS9009 M247"；未体检返回空。
+func (t *exitTracker) repTag(addr string) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := t.stats[addr]
+	if s == nil || s.repScore < 0 {
+		return ""
+	}
+	region := s.region
+	if region == "" {
+		region = "—"
+	}
+	tag := fmt.Sprintf("%s · %s(%d)", region, s.repGrade, s.repScore)
+	if s.repASN != "" {
+		tag += " · " + s.repASN
+	}
+	return tag
 }
 
 // recentlyTruncated 报告出口是否在 window 内发生过流截断。截断说明上游
@@ -254,8 +322,9 @@ func (t *exitTracker) filterBenched(exits []slot) []slot {
 }
 
 // rank 把出口按近期表现排序，排序结果即对冲竞速的出发顺序：
-// 截断少者优先 > 首字节快者优先 > 未知样本者居后（稳定排序保留原顺序）。
-func (t *exitTracker) rank(exits []slot) []slot {
+// 截断少者优先 > 地区偏好命中者优先 > 信誉分级高者优先 > 首字节快者
+// 优先 > 未知样本者居后（稳定排序保留原顺序）。
+func (t *exitTracker) rank(exits []slot, preferred map[string]struct{}) []slot {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	// 防止节点池长期轮换导致记账无限增长：超限时只保留本次在场的出口。
@@ -271,6 +340,8 @@ func (t *exitTracker) rank(exits []slot) []slot {
 	type item struct {
 		exit   slot
 		trunc  int
+		region int
+		rep    int
 		lat    time.Duration
 		known  bool
 	}
@@ -278,14 +349,28 @@ func (t *exitTracker) rank(exits []slot) []slot {
 	for _, candidate := range exits {
 		s := t.stats[candidate.addr]
 		if s == nil {
-			items = append(items, item{exit: candidate})
+			// 未记账出口：地区按未知、信誉按中性档（1），不占优也不吃亏。
+			items = append(items, item{exit: candidate, region: regionTierNil(preferred), rep: 1})
 			continue
 		}
-		items = append(items, item{exit: candidate, trunc: s.truncations, lat: s.latency, known: s.seen})
+		items = append(items, item{
+			exit:   candidate,
+			trunc:  s.truncations,
+			region: s.regionTier(preferred),
+			rep:    s.repTier(),
+			lat:    s.latency,
+			known:  s.seen,
+		})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].trunc != items[j].trunc {
 			return items[i].trunc < items[j].trunc
+		}
+		if items[i].region != items[j].region {
+			return items[i].region < items[j].region
+		}
+		if items[i].rep != items[j].rep {
+			return items[i].rep < items[j].rep
 		}
 		if items[i].known != items[j].known {
 			return items[i].known
@@ -297,6 +382,14 @@ func (t *exitTracker) rank(exits []slot) []slot {
 		out = append(out, it.exit)
 	}
 	return out
+}
+
+// regionTierNil 无记账的出口在地区偏好下的档位：等价于"未知地区"。
+func regionTierNil(preferred map[string]struct{}) int {
+	if len(preferred) == 0 {
+		return 0
+	}
+	return 1
 }
 
 // trackableExit 判断标识是否为可记账的代理出口（排除直连/本地等伪出口名）。
