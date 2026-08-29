@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/include"
@@ -21,6 +23,48 @@ import (
 // 这里刻意用 sing-box 自己的 JSON 配置格式（而不是拼 Go 结构体）：
 // JSON 字段是对外稳定契约，升级 sing-box 版本时不易被结构体改名打断。
 const advancedBasePort = 21000
+
+// advLinkCooldown 高级链接被初检/复检判死后，多久之内不再映射复活。
+// 源订阅每隔几分钟重拉，没有冷却的话死链会在每轮被重新映射、重新
+// 探测、再失败——白烧探活配额和 sing-box 配置。
+const advLinkCooldown = 6 * time.Hour
+
+// advCollect 汇总本轮应映射的链接集合：手动节点无条件保留（永不自动
+// 移除）；冷却中的死链跳过；其余 seen/fresh 合并去重。
+func advCollect(manualAdv []string, advSeen map[string]struct{}, freshLinks []string, cooldown map[string]time.Time, now time.Time) map[string]struct{} {
+	seenSet := make(map[string]struct{}, len(advSeen)+len(freshLinks))
+	add := func(link string) {
+		if _, dup := seenSet[link]; !dup {
+			seenSet[link] = struct{}{}
+		}
+	}
+	for _, link := range manualAdv {
+		add(link)
+	}
+	for link := range advSeen {
+		add(link)
+	}
+	for _, link := range freshLinks {
+		if until, ok := cooldown[link]; ok && now.Before(until) {
+			continue // 冷却中的死链不复活
+		}
+		add(link)
+	}
+	return seenSet
+}
+
+// sameLinkSet 报告期望映射集与当前实例是否一致（含收缩：少了一个也算不同）。
+func sameLinkSet(links map[string]string, items []advancedItem) bool {
+	if len(links) != len(items) {
+		return false
+	}
+	for _, it := range items {
+		if _, ok := links[it.link]; !ok {
+			return false
+		}
+	}
+	return true
+}
 
 type advancedItem struct {
 	link string // 原始分享链接（配置里的身份标识）
@@ -110,6 +154,15 @@ func startAdvancedBridge(items []advancedItem) (*advancedBridge, error) {
 	return bridge, nil
 }
 
+func seenKeys(set map[string]struct{}) []string {
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func (b *advancedBridge) Close() {
 	if b != nil && b.instance != nil {
 		_ = b.instance.Close()
@@ -123,28 +176,11 @@ func (b *advancedBridge) Close() {
 // 返回本轮映射出的池来源槽位（调用方负责探活入池）。
 func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string) []slot {
 	g.advMu.Lock()
-	all := make([]string, 0, len(g.advSeen)+len(freshLinks))
-	seenSet := make(map[string]struct{}, len(g.advSeen)+len(freshLinks))
-	add := func(link string) {
-		if _, dup := seenSet[link]; dup {
-			return
-		}
-		seenSet[link] = struct{}{}
-		all = append(all, link)
-	}
-	for link := range g.advSeen {
-		add(link)
-	}
-	for _, link := range freshLinks {
-		add(link)
-	}
-	if g.advBridge != nil && len(all) == len(g.advSeen) {
-		g.advMu.Unlock()
-		return nil // 没有新增，无需重建
-	}
+	now := time.Now()
+	seenSet := advCollect(g.manualAdv, g.advSeen, freshLinks, g.advCooldown, now)
 
-	items := make([]advancedItem, 0, len(all))
-	for _, link := range all {
+	items := make([]advancedItem, 0, len(seenSet))
+	for _, link := range seenKeys(seenSet) {
 		node, err := prepareAdvancedNode(link)
 		if err != nil {
 			continue // 订阅里的坏行/不支持的加密方式直接跳过，不拖累整个实例
@@ -154,6 +190,13 @@ func (g *gateway) ensureAdvancedBridge(ctx context.Context, freshLinks []string)
 	if len(items) == 0 {
 		g.advMu.Unlock()
 		return nil // 没有可用的高级节点
+	}
+
+	// 重建条件：期望映射集与当前实例不同（新增或收缩都算）。
+	// 收缩来自初检失败/复检淘汰的链接被移出常驻映射集。
+	if g.advBridge != nil && sameLinkSet(g.advBridge.Links, items) {
+		g.advMu.Unlock()
+		return nil
 	}
 
 	newBridge, err := startAdvancedBridge(items)

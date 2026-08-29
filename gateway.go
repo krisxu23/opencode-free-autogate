@@ -187,10 +187,11 @@ type gateway struct {
 	manualMu    sync.RWMutex
 	manualAddrs map[string]struct{}
 
-	advBridge *advancedBridge // 内嵌 sing-box：高级协议 → 本地 socks 端口
-	advMu     sync.Mutex      // 保护下面三个字段与桥接的创建/重建
-	advSeen   map[string]struct{}
-	manualAdv []string // 手动高级链接（桥接重建时必须保留）
+	advBridge   *advancedBridge      // 内嵌 sing-box：高级协议 → 本地 socks 端口
+	advMu       sync.Mutex           // 保护下面几个字段与桥接的创建/重建
+	advSeen     map[string]struct{}  // 当前应映射的高级链接集合（可收缩）
+	advCooldown map[string]time.Time // 高级链接淘汰冷却（link -> 期满时刻）
+	manualAdv   []string             // 手动高级链接（桥接重建时必须保留）
 
 	exits *exitTracker // 出口近期表现记账：评分排序 + 坐板凳
 
@@ -221,6 +222,7 @@ func newGateway(cfg config) *gateway {
 		customFails: make(map[string]int),
 		manualAddrs: make(map[string]struct{}),
 		advSeen:     make(map[string]struct{}),
+		advCooldown: make(map[string]time.Time),
 		exits:       newExitTracker(),
 		usage:       newUsageStats(filepath.Dir(configPath())),
 		deepQueue:   make(chan slot, 2048),
@@ -235,6 +237,9 @@ func newGateway(cfg config) *gateway {
 	})
 	g.iprep.refresh = func() []string {
 		return append(g.slotAddresses(true), g.slotAddresses(false)...)
+	}
+	g.iprep.originHost = func(addr string) string {
+		return g.advOriginHost(addr)
 	}
 	return g
 }
@@ -901,6 +906,7 @@ func (g *gateway) settleDeep(s slot, ok, hardFail bool) {
 	if !hardFail {
 		return // 软失败：板凳已记账，保留池位
 	}
+	g.advEvictAddr(s.addr) // 高级映射死链：移出常驻映射并入冷却
 	if g.removeFresh(s.addr) {
 		log.Printf("[淘汰] %s（复检连不通）", s.addr)
 		return
@@ -1948,6 +1954,54 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 		return nil, errAllExitsFailed
 	}
 	return nil, errNoProxy
+}
+
+// advEvictAddr 初检失败/复检淘汰后，把高级映射链接移出常驻映射集并
+// 进入冷却——下次 sing-box 重建时该端口收回。手动节点永不移除；
+// 非高级映射地址（普通节点）调用本函数是无害空操作。
+func (g *gateway) advEvictAddr(addr string) {
+	g.advMu.Lock()
+	defer g.advMu.Unlock()
+	if g.advBridge == nil {
+		return
+	}
+	link := ""
+	for l, local := range g.advBridge.Links {
+		if local == addr {
+			link = l
+			break
+		}
+	}
+	if link == "" {
+		return
+	}
+	for _, m := range g.manualAdv {
+		if m == link {
+			return // 手动节点永不自动移除
+		}
+	}
+	delete(g.advSeen, link)
+	g.advCooldown[link] = time.Now().Add(advLinkCooldown)
+}
+
+// advOriginHost 把 sing-box 本地映射地址（127.0.0.1:本地端口）反查成
+// 原始高级协议链接里的服务器地址，供 IP 信誉体检使用；查不到返回空。
+func (g *gateway) advOriginHost(localAddr string) string {
+	g.advMu.Lock()
+	bridge := g.advBridge
+	g.advMu.Unlock()
+	if bridge == nil {
+		return ""
+	}
+	for link, local := range bridge.Links {
+		if local != localAddr {
+			continue
+		}
+		if n, err := parseAdvancedNode(link); err == nil && n.server != "" {
+			return n.server
+		}
+	}
+	return ""
 }
 
 // punishExit 判定一次真实失败是否应记到具体出口/镜像头上。
