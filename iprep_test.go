@@ -99,16 +99,16 @@ func TestRepScoring(t *testing.T) {
 }
 
 func TestSpamhausVerdict(t *testing.T) {
-	if hit, penalty := spamhausVerdict([]net.IP{net.IPv4(127, 0, 0, 2)}); hit != "SBL/CSS" || penalty != 40 {
+	if hit, penalty, _ := spamhausVerdict([]net.IP{net.IPv4(127, 0, 0, 2)}); hit != "SBL/CSS" || penalty != 40 {
 		t.Fatalf("SBL 应扣 40: %q %d", hit, penalty)
 	}
-	if hit, penalty := spamhausVerdict([]net.IP{net.IPv4(127, 0, 0, 10)}); hit != "" || penalty != 0 {
+	if hit, penalty, _ := spamhausVerdict([]net.IP{net.IPv4(127, 0, 0, 10)}); hit != "" || penalty != 0 {
 		t.Fatalf("PBL 是策略表不算黑: %q %d", hit, penalty)
 	}
-	if hit, _ := spamhausVerdict([]net.IP{net.IPv4(127, 255, 255, 254)}); hit != "" {
-		t.Fatal("查询错误码应被忽略")
+	if _, _, blocked := spamhausVerdict([]net.IP{net.IPv4(127, 255, 255, 254)}); !blocked {
+		t.Fatal("公共 resolver 封锁特征码应报 blocked")
 	}
-	if hit, _ := spamhausVerdict(nil); hit != "" {
+	if hit, _, _ := spamhausVerdict(nil); hit != "" {
 		t.Fatal("空结果应干净")
 	}
 }
@@ -174,5 +174,54 @@ func TestRepSourceBackoff(t *testing.T) {
 	_ = fmt.Sprint(hits) // hits 仅用于确认服务器被调用过
 	if hits < 3 {
 		t.Fatal("退避前应有真实请求")
+	}
+}
+
+// 零配置：完全不填 key 也能体检——地理走 ip-api（免 key），Spamhaus 免 key
+// 直查（本测试注入 NXDOMAIN = 干净）。单打分源 → 封顶 B(74)。
+func TestKeylessGeo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","country":"DE","as":"AS24940 Hetzner Online GmbH","hosting":true,"proxy":false}`))
+	}))
+	defer srv.Close()
+
+	r := newIPReputer(config{}, nil)
+	r.ipAPIBase = srv.URL
+	r.lookupDNS = func(name string) ([]net.IP, error) {
+		return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+	}
+	r.process("5.6.7.8:1080")
+	res := r.cache["5.6.7.8:1080"]
+	if res == nil {
+		t.Fatal("零配置也应产出结果")
+	}
+	if res.Region != "DE" || res.ASN != "AS24940 Hetzner" || !res.Hosting {
+		t.Fatalf("免 key 地理源应填充: %+v", res)
+	}
+	if res.Score != 74 || res.Grade != "B" {
+		t.Fatalf("单打分源应封顶 74/B，得到 %d/%s", res.Score, res.Grade)
+	}
+}
+
+// 零配置 + resolver 被公共 DNS 封锁：Spamhaus 自动停用 24h，分数退化为未知。
+func TestSpamhausBlockedKeyless(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success","country":"US","as":"AS64500 Example"}`))
+	}))
+	defer srv.Close()
+
+	r := newIPReputer(config{}, nil)
+	r.ipAPIBase = srv.URL
+	r.lookupDNS = func(name string) ([]net.IP, error) {
+		return []net.IP{net.IPv4(127, 255, 255, 254)}, nil
+	}
+	r.process("1.2.3.4:1080")
+	if !time.Now().Before(r.spamhausOffUntil) {
+		t.Fatal("被拦截后应停用 Spamhaus 24h")
+	}
+	res := r.cache["1.2.3.4:1080"]
+	if res == nil || res.Score != repUnknown {
+		t.Fatalf("无任何打分源应保持未知: %+v", res)
 	}
 }

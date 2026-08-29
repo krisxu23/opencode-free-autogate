@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -32,6 +33,9 @@ const (
 	ipRepResolveTTL   = time.Hour        // 域名出口 → IP 的解析缓存
 	ipRepSourceOff    = 10 * time.Minute // 单源连续失败后的退避
 	ipRepTimeout      = 10 * time.Second // 单次 HTTP 查询超时
+	ipRepUnknownTTL   = time.Hour        // 未知结果（源全挂/未覆盖）的短缓存：稍后重试
+	ipAPIInterval     = 1500 * time.Millisecond // 免 key 源（ip-api 45 次/分）的节流间隔
+	spamhausBlockedOff = 24 * time.Hour  // 免 key zen 被公共 resolver 拦截后的停用时长
 	repUnknown        = -1               // Score 取值：无任何源可用/未体检
 )
 
@@ -44,6 +48,7 @@ type ipRepResult struct {
 	Grade   string // A/B/C/D
 	SpamHit string // 命中的 Spamhaus 名单（空 = 未命中或未启用）
 	Reports int    // AbuseIPDB 累计举报数
+	Hosting bool   // ip-api 判定机房/托管
 	Checked time.Time
 }
 
@@ -81,6 +86,11 @@ type ipReputer struct {
 	abuseOffUntil  time.Time
 	ipinfoOffUntil time.Time
 
+	ipAPIBase        string
+	spamhausOffUntil time.Time
+	spamhausHint     bool
+	interval         time.Duration
+
 	// 测试注入点
 	abuseBase  string
 	ipinfoBase string
@@ -94,7 +104,7 @@ type hostIPEntry struct {
 }
 
 func newIPReputer(cfg config, sink func(addr string, res *ipRepResult)) *ipReputer {
-	return &ipReputer{
+	r := &ipReputer{
 		cache:       make(map[string]*ipRepResult),
 		hostIP:      make(map[string]hostIPEntry),
 		pending:     make(map[string]bool),
@@ -106,9 +116,17 @@ func newIPReputer(cfg config, sink func(addr string, res *ipRepResult)) *ipReput
 		dqsKey:      cfg.spamhausDQSKey,
 		abuseBase:   "https://api.abuseipdb.com/api/v2",
 		ipinfoBase:  "https://ipinfo.io",
+		ipAPIBase:   "http://ip-api.com/json",
 		lookupDNS:   net.LookupIP,
 		resolver:    net.LookupIP,
 	}
+	if cfg.ipinfoToken != "" {
+		r.interval = ipRepInterval
+	} else {
+		// 无 token 时地理源走 ip-api（免 key，45 次/分），放慢节流防 429。
+		r.interval = ipAPIInterval
+	}
+	return r
 }
 
 // start 启动串行体检 worker。
@@ -120,19 +138,25 @@ func (r *ipReputer) start(ctx context.Context) {
 				return
 			case addr := <-r.queue:
 				r.process(addr)
-				time.Sleep(ipRepInterval)
+				time.Sleep(r.interval)
 			}
 		}
 	}()
 }
 
+// cacheTTL 结果缓存期：已知信誉 7 天；未知（源全挂/未覆盖）短缓存，
+// 稍后自动重试。
+func cacheTTL(res *ipRepResult) time.Duration {
+	if res == nil || res.Score == repUnknown {
+		return ipRepUnknownTTL
+	}
+	return ipRepTTL
+}
+
 // Request 申请体检一个出口（转正/启动补查时调用）。已缓存新鲜结果或
-// 排队中的跳过；无任何已配置数据源时直接忽略。
+// 排队中的跳过。零配置可用：无需任何 key。
 func (r *ipReputer) Request(addr string) {
 	if addr == "" {
-		return
-	}
-	if r.abuseKey == "" && r.ipinfoToken == "" && r.dqsKey == "" {
 		return
 	}
 	r.mu.Lock()
@@ -162,7 +186,7 @@ func (r *ipReputer) process(addr string) {
 		r.mu.Unlock()
 	}()
 	r.mu.Lock()
-	if res, ok := r.cache[addr]; ok && time.Since(res.Checked) < ipRepTTL {
+	if res, ok := r.cache[addr]; ok && time.Since(res.Checked) < cacheTTL(res) {
 		r.mu.Unlock()
 		return
 	}
@@ -216,6 +240,10 @@ func (r *ipReputer) check(addr string) *ipRepResult {
 		return nil
 	}
 	res := &ipRepResult{IP: ip, Score: repUnknown, Checked: time.Now()}
+	// scoringSources 计"参与打分的源"（AbuseIPDB/Spamhaus）。地理源
+	// （IPinfo/ip-api）只补信息不参与打分。覆盖不足时封顶 B：单源给 A
+	// 违背"交叉检查才算权威"的初衷。
+	scoringSources := 0
 
 	// AbuseIPDB：滥用置信度是主扣分项，顺带给国家。
 	if r.abuseAvailable() {
@@ -238,11 +266,13 @@ func (r *ipReputer) check(addr string) *ipRepResult {
 				res.Score = 100
 			}
 			res.Score -= penalty
+			scoringSources++
 		}
 	}
 
-	// IPinfo：地区偏好的数据源，顺带 ASN/运营商展示。信息性，不扣分。
-	if r.ipinfoAvailable() {
+	// 地理源链：有 token 走 IPinfo（配额高、字段全）；无 token 走
+	// ip-api（完全免 key，45 次/分，附机房/代理标志）。信息性，不扣分。
+	if r.ipinfoToken != "" && time.Now().After(r.ipinfoOffUntil) {
 		if data, err := r.queryIPinfo(ip); err != nil {
 			r.noteIPinfoFailure()
 		} else {
@@ -252,32 +282,75 @@ func (r *ipReputer) check(addr string) *ipRepResult {
 			}
 			res.ASN = shortASN(data)
 		}
+	} else if r.ipinfoToken == "" && time.Now().After(r.ipinfoOffUntil) {
+		if data, err := r.queryIPAPI(ip); err != nil {
+			r.noteIPinfoFailure() // 与 IPinfo 共用退避记账：同一角色（地理源）
+		} else {
+			r.noteIPinfoSuccess()
+			if data.Country != "" {
+				res.Region = data.Country
+			}
+			res.ASN = shortASFromASField(data.As)
+			res.Hosting = data.Hosting
+		}
 	}
 
-	// Spamhaus DQS：SBL/CSS 扣 40、XBL 扣 30；PBL 是策略表不算黑；
-	// 127.255.255.x 是查询错误码，忽略。
-	if r.dqsKey != "" {
+	// Spamhaus：配了 DQS key 走 zen.dq.spamhaus.net（任何 resolver 都行）；
+	// 没配则免 key 直查 zen.spamhaus.org——被公共 resolver 拦截时返回
+	// 127.255.255.25x 特征码，自动停用 24 小时并提示一次。
+	if r.dqsKey != "" || time.Now().After(r.spamhausOffUntil) {
 		rev := strings.Join(reverseSegments(ip), ".")
-		name := rev + "." + r.dqsKey + ".zen.dq.spamhaus.net"
-		ips, err := r.lookupDNS(name)
+		zone := "zen.spamhaus.org"
+		if r.dqsKey != "" {
+			zone = r.dqsKey + ".zen.dq.spamhaus.net"
+		}
+		ips, err := r.lookupDNS(rev + "." + zone)
 		if err == nil {
-			if hit, penalty := spamhausVerdict(ips); hit != "" {
+			hit, penalty, blocked := spamhausVerdict(ips)
+			if blocked {
+				if r.dqsKey == "" && !r.spamhausHint {
+					r.spamhausHint = true
+					log.Printf("[信誉] Spamhaus 免 key 查询被 resolver 拦截（127.255.255.25x），停用 24 小时；可注册免费 DQS key 或更换 DNS 恢复")
+				}
+				r.mu.Lock()
+				r.spamhausOffUntil = time.Now().Add(spamhausBlockedOff)
+				r.mu.Unlock()
+			} else if hit != "" {
 				res.SpamHit = hit
 				if res.Score == repUnknown {
 					res.Score = 100
 				}
 				res.Score -= penalty
+				scoringSources++
+			} else {
+				// 干净：也是一次有效打分（无扣分）
+				if res.Score == repUnknown {
+					res.Score = 100
+				}
+				scoringSources++
 			}
 		} else if !isDNSNotFound(err) {
 			// NXDOMAIN = 未命中（干净）；其他 DNS 错误静默忽略，fail-open。
 			_ = err
+		} else {
+			// NXDOMAIN = 未命中（干净）
+			if res.Score == repUnknown {
+				res.Score = 100
+			}
+			scoringSources++
 		}
 	}
 
-	if res.Score < 0 {
-		res.Score = 0
+	// 覆盖不足封顶：只有一个打分源时最高 B（74），避免"单源干净 = A"。
+	if res.Score != repUnknown && scoringSources < 2 && res.Score > 74 {
+		res.Score = 74
 	}
+
 	if res.Score != repUnknown {
+		// 未知哨兵不参与钳制：只有真实打分才归一化并评级。
+		if res.Score < 0 {
+			res.Score = 0
+		}
 		res.Grade = gradeOf(res.Score)
 	}
 	return res
@@ -285,10 +358,6 @@ func (r *ipReputer) check(addr string) *ipRepResult {
 
 func (r *ipReputer) abuseAvailable() bool {
 	return r.abuseKey != "" && time.Now().After(r.abuseOffUntil)
-}
-
-func (r *ipReputer) ipinfoAvailable() bool {
-	return r.ipinfoToken != "" && time.Now().After(r.ipinfoOffUntil)
 }
 
 func (r *ipReputer) noteAbuseFailure() {
@@ -393,6 +462,45 @@ func (r *ipReputer) queryIPinfo(ip string) (*ipinfoResp, error) {
 	return &data, nil
 }
 
+type ipAPIResp struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	Country string `json:"country"`
+	As      string `json:"as"`
+	Proxy   bool   `json:"proxy"`
+	Hosting bool   `json:"hosting"`
+}
+
+// queryIPAPI 免 key 地理查询（ip-api.com，45 次/分，HTTP）。
+func (r *ipReputer) queryIPAPI(ip string) (*ipAPIResp, error) {
+	resp, err := r.client.Get(r.ipAPIBase + "/" + ip + "?fields=status,message,country,as,org,proxy,hosting")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ip-api status %d", resp.StatusCode)
+	}
+	var data ipAPIResp
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	if data.Status != "success" {
+		return nil, fmt.Errorf("ip-api: %s", data.Message)
+	}
+	return &data, nil
+}
+
+// shortASFromASField 从 ip-api 的 as 字段（"AS9009 M247 Europe SRL"）
+// 提取 "AS9009 M247" 短形态。
+func shortASFromASField(as string) string {
+	fields := strings.Fields(as)
+	if len(fields) >= 2 {
+		return fields[0] + " " + fields[1]
+	}
+	return as
+}
+
 // shortASN 从 ipinfo 的 org/asn 字段提取 "AS9009 M247" 短形态。
 func shortASN(data *ipinfoResp) string {
 	if data.ASN != nil && data.ASN.ASN != "" {
@@ -425,26 +533,30 @@ func reverseSegments(ip string) []string {
 }
 
 // spamhausVerdict 解析 zen A 记录返回码：SBL(2)/CSS(3)/XBL(4) 算命中，
-// PBL(10/11) 是策略表不算黑，127.255.255.x 是查询错误码。
-func spamhausVerdict(ips []net.IP) (hit string, penalty int) {
+// PBL(10/11) 是策略表不算黑；127.255.255.252-254 表示查询被 resolver
+// 拦截（blocked）——公共 DNS 查免费 DNSBL 的官方封锁特征。
+func spamhausVerdict(ips []net.IP) (hit string, penalty int, blocked bool) {
 	for _, ip := range ips {
 		v4 := ip.To4()
 		if v4 == nil || v4[0] != 127 {
 			continue
 		}
 		if v4[1] == 255 {
-			continue // 查询错误码段
+			if v4[2] == 255 && v4[3] >= 252 {
+				return "", 0, true // 公共 resolver 被官方封锁的特征码
+			}
+			continue // 其他错误码段
 		}
 		switch v4[3] {
 		case 2, 3:
-			return "SBL/CSS", 40
+			return "SBL/CSS", 40, false
 		case 4:
-			return "XBL", 30
+			return "XBL", 30, false
 		case 10, 11:
 			// PBL：该段按策略不应直接发邮件，不代表 IP 恶意
 		}
 	}
-	return "", 0
+	return "", 0, false
 }
 
 func isDNSNotFound(err error) bool {
