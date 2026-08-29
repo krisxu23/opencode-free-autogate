@@ -40,11 +40,14 @@ func TestIPRiskCheckAndCache(t *testing.T) {
 	r := newIPReputer(nil)
 	fetches := 0
 	r.fetch = func(url string) (int, string, error) {
-		if strings.Contains(url, "iprisk.top") {
+		return 503, "", fmt.Errorf("unexpected url %s", url) // 其余源不可用
+	}
+	r.pageFetch = func(pageURL string) (int, string, error) {
+		if strings.Contains(pageURL, "iprisk.top") {
 			fetches++ // 只数 iprisk 页面抓取
 			return 200, sampleIPRiskHTML, nil
 		}
-		return 503, "", fmt.Errorf("unexpected url %s", url) // 其余源不可用
+		return 404, "", nil
 	}
 	r.process("1.2.3.4:1080")
 	if r.cache["1.2.3.4"] == nil {
@@ -92,10 +95,10 @@ func TestBlackboxScore(t *testing.T) {
 func TestIPRiskShellSkip(t *testing.T) {
 	r := newIPReputer(nil)
 	r.fetch = func(url string) (int, string, error) {
-		if strings.Contains(url, "iprisk.top") {
-			return 200, "<title>IP纯净度检测与IP风险查询 | IPRisk</title>", nil // 外壳
-		}
 		return 200, `{"classification":"hosting","signals":{"hosting":true},"asn":{"number":24940,"name":"Hetzner"}}`, nil
+	}
+	r.pageFetch = func(pageURL string) (int, string, error) {
+		return 200, "<title>IP纯净度检测与IP风险查询 | IPRisk</title>", nil // 外壳
 	}
 	r.process("1.2.3.4:1080")
 	res := r.cache["1.2.3.4"]
@@ -116,7 +119,10 @@ func TestIPKeyedDedup(t *testing.T) {
 	fetches := 0
 	sinks := 0
 	r.fetch = func(url string) (int, string, error) {
-		if strings.Contains(url, "iprisk.top") {
+		return 200, `{"classification":"hosting","signals":{}}`, nil
+	}
+	r.pageFetch = func(pageURL string) (int, string, error) {
+		if strings.Contains(pageURL, "iprisk.top") {
 			fetches++
 		}
 		return 200, sampleIPRiskHTML, nil
@@ -137,6 +143,9 @@ func TestIPKeyedDedup(t *testing.T) {
 func TestIPRiskBackoff(t *testing.T) {
 	r := newIPReputer(nil)
 	r.fetch = func(url string) (int, string, error) {
+		return 503, "", errors.New("boom")
+	}
+	r.pageFetch = func(pageURL string) (int, string, error) {
 		return 503, "", errors.New("boom")
 	}
 	for i := 0; i < 5; i++ {
@@ -216,11 +225,12 @@ func TestOriginHostMapping(t *testing.T) {
 	r := newIPReputer(nil)
 	fetches := 0
 	r.fetch = func(url string) (int, string, error) {
-		if strings.Contains(url, "iprisk.top") {
-			fetches++
-			if !strings.Contains(url, "iprisk.top/ip/203.0.113.10") {
-				t.Fatalf("应查真实出口 IP，得到 %s", url)
-			}
+		return 200, `{"classification":"hosting","signals":{}}`, nil
+	}
+	r.pageFetch = func(pageURL string) (int, string, error) {
+		fetches++
+		if !strings.Contains(pageURL, "iprisk.top/ip/203.0.113.10") {
+			t.Fatalf("应查真实出口 IP，得到 %s", pageURL)
 		}
 		return 200, sampleIPRiskHTML, nil
 	}
@@ -307,12 +317,12 @@ func TestFetchPageViaExitFallback(t *testing.T) {
 func TestFetchPageNoExits(t *testing.T) {
 	r := newIPReputer(nil)
 	r.exitURLs = func() []*url.URL { return nil }
-	r.fetch = func(url string) (int, string, error) {
+	r.pageFetch = func(pageURL string) (int, string, error) {
 		return 503, "busy", nil
 	}
-	status, _, err := r.fetchPage("http://x/ip/1.2.3.4")
-	if err != nil || status != 503 {
-		t.Fatalf("无出口应透传直连结果: %d %v", status, err)
+	status, body, err := r.fetchPage("http://x/ip/1.2.3.4")
+	if err != nil || status != 503 || body != "busy" {
+		t.Fatalf("无出口应透传直连结果: %d %q %v", status, body, err)
 	}
 }
 
@@ -324,6 +334,9 @@ func TestIPAPIISSecondOpinion(t *testing.T) {
 			return 200, `{"is_datacenter":true,"is_proxy":true,"is_vpn":false,"is_abuser":true,"is_tor":false,"cc":"HK","asn_num":132203,"asn_org":"Tencent"}`, nil
 		}
 		return 503, "", nil // Blackbox 不可用
+	}
+	r.pageFetch = func(pageURL string) (int, string, error) {
+		return 200, "<title>IP纯净度检测与IP风险查询 | IPRisk</title>", nil // 外壳：跳过
 	}
 	r.process("1.2.3.4:1080")
 	res := r.cache["1.2.3.4"]

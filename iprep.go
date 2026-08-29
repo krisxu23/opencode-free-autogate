@@ -40,7 +40,8 @@ const (
 	ipRepResolveTTL   = time.Hour          // 域名出口 → IP 的解析缓存
 	ipRepSourceOff    = 30 * time.Minute   // 连续失败后的源退避
 	ipRepSourceFails  = 5                  // 触发退避的连续失败次数（扫池高峰抖动多，别太敏感）
-	ipRepTimeout      = 20 * time.Second   // 单次抓取超时
+	ipRepTimeout      = 12 * time.Second   // JSON 源单次查询超时
+	ipRepPageTimeout  = 8 * time.Second    // iprisk 页面单次抓取超时（增强层不许久拖）
 	ipRepRefreshEvery = 24 * time.Hour     // 正式池重查周期
 	ipRepMaxCache     = 4096               // 结果缓存上限
 	repUnknown        = -1                 // Score 取值：未体检/体检失败
@@ -97,10 +98,14 @@ type ipReputer struct {
 	// exitURLs 提供正式池出口（供直连抓取失败时借道重试）。
 	exitURLs func() []*url.URL
 
+	// pageFetch 页面抓取入口（可注入；默认 pageHTTPFetch）。
+	pageFetch func(pageURL string) (int, string, error)
+
 	ipriskBase string
 	bbBase     string
 	geoBase    string
 	ipapiBase  string
+	pageClient *http.Client
 
 	// 测试注入点
 	lookupDNS func(name string) ([]net.IP, error)
@@ -148,6 +153,7 @@ func newIPReputer(sink func(addr string, res *ipRepResult)) *ipReputer {
 		pending:    make(map[string]bool),
 		queue:      make(chan string, 4096),
 		client:     &http.Client{Timeout: ipRepTimeout},
+		pageClient: &http.Client{Timeout: ipRepPageTimeout},
 		sink:       sink,
 		ipriskBase: "https://iprisk.top",
 		bbBase:     "https://blackbox.ipinfo.app/api/v3beta",
@@ -157,6 +163,7 @@ func newIPReputer(sink func(addr string, res *ipRepResult)) *ipReputer {
 		resolver:   net.LookupIP,
 	}
 	r.fetch = r.httpFetch
+	r.pageFetch = r.pageHTTPFetch
 	return r
 }
 
@@ -164,7 +171,7 @@ func newIPReputer(sink func(addr string, res *ipRepResult)) *ipReputer {
 // 初检扫池高峰期上行被 128 路探测打满，直连到检测站容易超时——
 // 而正式池出口刚通过探活，链路质量有保障。
 func (r *ipReputer) fetchPage(pageURL string) (int, string, error) {
-	status, body, err := r.fetch(pageURL)
+	status, body, err := r.pageFetch(pageURL)
 	if err == nil && status == http.StatusOK {
 		return status, body, nil
 	}
@@ -173,14 +180,14 @@ func (r *ipReputer) fetchPage(pageURL string) (int, string, error) {
 		return firstStatus, body, firstErr
 	}
 	exits := r.exitURLs()
-	if len(exits) > 2 {
-		exits = exits[:2]
+	if len(exits) > 1 {
+		exits = exits[:1] // 增强层只借道一次：扫池高峰的超时不许拖住队列
 	}
 	for _, pu := range exits {
 		if pu == nil {
 			continue
 		}
-		client := &http.Client{Timeout: ipRepTimeout, Transport: sharedTransports.get(pu)}
+		client := &http.Client{Timeout: ipRepPageTimeout, Transport: sharedTransports.get(pu)}
 		req, err := http.NewRequest(http.MethodGet, pageURL, nil)
 		if err != nil {
 			continue
@@ -202,6 +209,26 @@ func (r *ipReputer) fetchPage(pageURL string) (int, string, error) {
 		}
 	}
 	return firstStatus, body, firstErr
+}
+
+// pageHTTPFetch 页面抓取默认实现（独立短超时客户端）。
+func (r *ipReputer) pageHTTPFetch(pageURL string) (int, string, error) {
+	req, err := http.NewRequest(http.MethodGet, pageURL, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
+	resp, err := r.pageClient.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	buf := make([]byte, 256<<10)
+	n, _ := io.ReadFull(resp.Body, buf)
+	if n < 0 {
+		n = 0
+	}
+	return resp.StatusCode, string(buf[:n]), nil
 }
 
 // httpFetch 默认抓取实现。
@@ -629,14 +656,15 @@ func (r *ipReputer) queryIPAPIIS(ip string) (*ipapiISResp, error) {
 }
 
 type geoResp struct {
-	Status  string `json:"status"`
-	Message string `json:"message"`
-	Country string `json:"country"`
+	Status      string `json:"status"`
+	Message     string `json:"message"`
+	CountryCode string `json:"countryCode"`
 }
 
 // queryGeoCountry 免 key 地理查询（ip-api.com，45 次/分）——仅供地区偏好。
+// 要 countryCode（CN/US/...）：地区分组匹配的是国家码而非国家名。
 func (r *ipReputer) queryGeoCountry(ip string) (string, error) {
-	status, body, err := r.fetch(r.geoBase + "/" + url.QueryEscape(ip) + "?fields=status,country")
+	status, body, err := r.fetch(r.geoBase + "/" + url.QueryEscape(ip) + "?fields=status,countryCode")
 	if err != nil {
 		return "", err
 	}
@@ -650,7 +678,7 @@ func (r *ipReputer) queryGeoCountry(ip string) (string, error) {
 	if data.Status != "success" {
 		return "", fmt.Errorf("ip-api: %s", data.Message)
 	}
-	return data.Country, nil
+	return data.CountryCode, nil
 }
 
 // parseIPRiskScore 从结果页提取 "纯净度评分为 N/100" 的 N。
