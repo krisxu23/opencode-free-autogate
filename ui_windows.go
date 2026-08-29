@@ -680,7 +680,9 @@ func (ui *gatewayUI) refreshPoolLive() {
 	if ui.poolLive == nil {
 		return
 	}
-	slots := ui.app.gateway.customSnapshot()
+	// 展示顺序与竞速出场顺序一致：截断少 > 地区偏好命中 > 信誉分高 >
+	// 延迟低（复用 exitTracker.rank，绘制时排序，~150 元素微秒级）。
+	slots := ui.app.gateway.exits.rank(ui.app.gateway.customSnapshot(), ui.app.gateway.cfg.preferredRegionSet())
 	var text string
 	if len(slots) == 0 {
 		text = "（暂无正式节点，初检通过的候选正在流水线复检中…）"
