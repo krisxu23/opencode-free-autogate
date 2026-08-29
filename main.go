@@ -468,8 +468,9 @@ func (a *app) handlePost(w http.ResponseWriter, r *http.Request, path string, de
 		guard = newSseGuard(w, path)
 	}
 	var response *gatewayResponse
-	if stream && a.gateway.cfg.absorbStreaming {
-		// 吸收模式：保活心跳由 sseGuard 负责，这里在网关内重试直到完整。
+	if a.gateway.cfg.absorbStreaming {
+		// 吸收模式：流式与非流式都走网关内重试直到成功——上游故障窗口
+		// 中客户端不再直接收到 503（流式的保活心跳由 sseGuard 负责）。
 		response, err = a.gateway.dispatchAbsorb(r.Context(), request, trace)
 	} else {
 		response, err = a.gateway.dispatch(r.Context(), request, trace)
