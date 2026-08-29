@@ -108,3 +108,82 @@ func TestRepTagFormat(t *testing.T) {
 		t.Fatalf("标签格式错误: %q", tag)
 	}
 }
+
+// sing-box 本地映射节点（127.0.0.1:端口）不得拿去查本机回环的信誉：
+// 无反查结果时直接跳过体检（不计失败、不写缓存）。
+func TestPrivateSkipNoFetch(t *testing.T) {
+	r := newIPReputer(nil)
+	fetches := 0
+	r.fetch = func(url string) (int, string, error) {
+		fetches++
+		return 200, sampleIPRiskHTML, nil
+	}
+	r.process("127.0.0.1:21004")
+	if fetches != 0 {
+		t.Fatalf("回环地址不应发起抓取，实际 %d 次", fetches)
+	}
+	if r.cache["127.0.0.1:21004"] != nil {
+		t.Fatal("回环地址不应写缓存")
+	}
+	if !r.available() {
+		t.Fatal("跳过体检不应计入源退避")
+	}
+}
+
+// 反查成功：本地映射节点应按原始服务器地址体检，结果挂在映射地址名下。
+func TestOriginHostMapping(t *testing.T) {
+	r := newIPReputer(nil)
+	fetches := 0
+	r.fetch = func(url string) (int, string, error) {
+		fetches++
+		if !strings.Contains(url, "iprisk.top/ip/203.0.113.10") {
+			return 0, "", fmt.Errorf("应查真实出口 IP，得到 %s", url)
+		}
+		return 200, sampleIPRiskHTML, nil
+	}
+	r.originHost = func(addr string) string {
+		if addr == "127.0.0.1:21004" {
+			return "203.0.113.10"
+		}
+		return ""
+	}
+	r.process("127.0.0.1:21004")
+	res := r.cache["127.0.0.1:21004"]
+	if res == nil {
+		t.Fatal("反查成功应写缓存")
+	}
+	if res.IP != "203.0.113.10" {
+		t.Fatalf("应按原始服务器 IP 体检: %q", res.IP)
+	}
+	if fetches != 1 {
+		t.Fatalf("应恰好抓取 1 次，实际 %d", fetches)
+	}
+}
+
+// 未体检节点的显示与排序：不得显示成 "(0)"，也不得当 D 档垫底。
+func TestRepUnknownDefaults(t *testing.T) {
+	tr := newExitTracker()
+	tr.observeRep("d.node:1", &ipRepResult{Score: 20, Grade: "D", Region: "US"})
+	if tag := tr.repTag("none:1"); tag != "" {
+		t.Fatalf("未体检节点应无信誉标签，得到 %q", tag)
+	}
+	exits := []slot{{addr: "none:1"}, {addr: "d.node:1"}}
+	ordered := tr.rank(exits, nil)
+	if ordered[0].addr != "none:1" {
+		t.Fatalf("未体检节点应排在中性档（D 之前），得到 %s", ordered[0].addr)
+	}
+}
+
+// 404 = 该 IP 不在 iprisk 库：个体属性，不计入源退避。
+func TestNotFoundNoBackoff(t *testing.T) {
+	r := newIPReputer(nil)
+	r.fetch = func(url string) (int, string, error) {
+		return 404, "<html>not found</html>", nil
+	}
+	for i := 0; i < 6; i++ {
+		r.process("192.0.2.1:1080")
+	}
+	if !r.available() {
+		t.Fatal("404 不应触发源退避")
+	}
+}

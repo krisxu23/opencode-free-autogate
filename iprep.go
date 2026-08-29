@@ -75,6 +75,10 @@ type ipReputer struct {
 	fails    int
 	offUntil time.Time
 
+	// originHost 把本地映射地址（sing-box 的 127.0.0.1:本地端口）反查成
+	// 原始服务器地址——否则信誉体检会去查本机回环，毫无意义。
+	originHost func(addr string) string
+
 	ipriskBase string
 
 	// 测试注入点
@@ -228,6 +232,12 @@ func (r *ipReputer) available() bool {
 	return time.Now().After(r.offUntil)
 }
 
+// isPrivateOrLoopback 报告 IP 是否为回环/内网/链路本地等不可公网体检的地址。
+func isPrivateOrLoopback(ip net.IP) bool {
+	return ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+}
+
 // check 抓取 iprisk.top 查询页并解析评分/归属。
 func (r *ipReputer) check(addr string) *ipRepResult {
 	if !r.available() {
@@ -241,8 +251,30 @@ func (r *ipReputer) check(addr string) *ipRepResult {
 	if ip == "" {
 		return nil
 	}
+	// 回环/内网地址（sing-box 本地映射、内网代理）查信誉毫无意义：
+	// 反查原始服务器地址；映射不出来就跳过体检（不计故障）。
+	if pip := net.ParseIP(ip); isPrivateOrLoopback(pip) {
+		origin := ""
+		if r.originHost != nil {
+			origin = r.originHost(addr)
+		}
+		if origin == "" || origin == host {
+			return nil
+		}
+		if h, _, err2 := net.SplitHostPort(origin); err2 == nil {
+			origin = h // 防御：反查结果若带端口则剥离
+		}
+		ip = r.resolveHost(origin)
+		if ip == "" || isPrivateOrLoopback(net.ParseIP(ip)) {
+			return nil
+		}
+	}
 	status, body, err := r.fetch(r.ipriskBase + "/ip/" + ip)
 	if err != nil || status != http.StatusOK {
+		// 404 = 该 IP 不在 iprisk 库：个体属性而非站点故障，不计退避。
+		if err == nil && status == http.StatusNotFound {
+			return nil
+		}
 		r.noteFailure()
 		return nil
 	}

@@ -76,7 +76,9 @@ func newExitTracker() *exitTracker {
 func (t *exitTracker) statLocked(addr string) *exitStat {
 	s := t.stats[addr]
 	if s == nil {
-		s = &exitStat{}
+		// repScore 必须以 repUnknown(-1) 起步：零值 0 会让未体检节点
+		// 显示成 "(0)" 并被当成 D 档排序。
+		s = &exitStat{repScore: repUnknown}
 		t.stats[addr] = s
 	}
 	return s
