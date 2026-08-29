@@ -391,7 +391,7 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 								Font:   uiFont,
 								Layout: dcl.VBox{Spacing: 6},
 								Children: []dcl.Widget{
-									dcl.Label{Text: "零配置可用：地区/ASN 自动走 ip-api（免 key），Spamhaus 免 key 尽力查询（被 resolver 拦截时自动跳过 24h）。可选增强：AbuseIPDB key（滥用举报）、IPinfo token（更高地理配额）、Spamhaus DQS key（免拦截）。信誉只影响出场顺序，绝不单独剔除节点。"},
+									dcl.Label{Text: "零配置可用：地区/ASN 走 ip-api→ipleak 双源自动兜底（均免 key），Spamhaus 免 key 尽力查询（被 resolver 拦截时自动跳过 24h）。可选增强：AbuseIPDB key（滥用举报）、IPinfo token（更高地理配额）、Spamhaus DQS key（免拦截）。信誉只影响出场顺序，绝不单独剔除节点；可疑节点可在浏览器人工核查 scamalytics.com/ip/{IP}。"},
 									dcl.Composite{
 										Layout: dcl.HBox{MarginsZero: true},
 										Children: []dcl.Widget{

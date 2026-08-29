@@ -165,7 +165,7 @@ func TestRepSourceBackoff(t *testing.T) {
 			r.noteAbuseFailure()
 		}
 	}
-	if !time.Now().Before(r.abuseOffUntil) {
+	if !time.Now().Before(r.abuseState.offUntil) {
 		t.Fatal("连续 3 次失败后应进入退避")
 	}
 	if r.abuseAvailable() {
@@ -223,5 +223,39 @@ func TestSpamhausBlockedKeyless(t *testing.T) {
 	res := r.cache["1.2.3.4:1080"]
 	if res == nil || res.Score != repUnknown {
 		t.Fatalf("无任何打分源应保持未知: %+v", res)
+	}
+}
+
+// 地理源兜底链：ip-api 挂了自动落到 ipleak（免 key），地区/ASN 不缺失。
+func TestIpleakFallback(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer dead.Close()
+
+	var ipleakHits int
+	ipleak := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ipleakHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"as_number":24940,"isp_name":"Hetzner Online GmbH","country_code":"DE"}`))
+	}))
+	defer ipleak.Close()
+
+	r := newIPReputer(config{}, nil)
+	r.ipAPIBase = dead.URL
+	r.ipleakBase = ipleak.URL
+	r.lookupDNS = func(name string) ([]net.IP, error) {
+		return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+	}
+	r.process("9.9.9.9:1080")
+	res := r.cache["9.9.9.9:1080"]
+	if res == nil {
+		t.Fatal("应产出结果")
+	}
+	if ipleakHits != 1 {
+		t.Fatalf("ip-api 失败后应兜底查询 ipleak，实际 %d 次", ipleakHits)
+	}
+	if res.Region != "DE" || res.ASN != "AS24940 Hetzner" {
+		t.Fatalf("地区/ASN 应来自 ipleak: %+v", res)
 	}
 }

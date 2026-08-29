@@ -80,11 +80,12 @@ type ipReputer struct {
 	abuseKey    string
 	dqsKey      string
 
-	// 源退避：连续失败暂停该源，fail-open
-	abuseFails     int
-	ipinfoFails    int
-	abuseOffUntil  time.Time
-	ipinfoOffUntil time.Time
+	// 源退避：连续失败暂停该源，fail-open。地理源按角色独立记账。
+	abuseState  srcState
+	ipinfoState srcState
+	ipAPIState  srcState
+	ipleakState srcState
+	ipleakBase  string
 
 	ipAPIBase        string
 	spamhausOffUntil time.Time
@@ -99,8 +100,30 @@ type ipReputer struct {
 }
 
 type hostIPEntry struct {
-	ip    string
-	seen  time.Time
+	ip   string
+	seen time.Time
+}
+
+// srcState 是单数据源的失败退避状态：连续 3 次失败停用一段时间。
+type srcState struct {
+	fails    int
+	offUntil time.Time
+}
+
+func (s *srcState) note(ok bool) {
+	if ok {
+		s.fails = 0
+		return
+	}
+	s.fails++
+	if s.fails >= 3 {
+		s.offUntil = time.Now().Add(ipRepSourceOff)
+		s.fails = 0
+	}
+}
+
+func (s *srcState) available() bool {
+	return time.Now().After(s.offUntil)
 }
 
 func newIPReputer(cfg config, sink func(addr string, res *ipRepResult)) *ipReputer {
@@ -117,6 +140,7 @@ func newIPReputer(cfg config, sink func(addr string, res *ipRepResult)) *ipReput
 		abuseBase:   "https://api.abuseipdb.com/api/v2",
 		ipinfoBase:  "https://ipinfo.io",
 		ipAPIBase:   "http://ip-api.com/json",
+		ipleakBase:  "https://ipleak.net",
 		lookupDNS:   net.LookupIP,
 		resolver:    net.LookupIP,
 	}
@@ -270,9 +294,10 @@ func (r *ipReputer) check(addr string) *ipRepResult {
 		}
 	}
 
-	// 地理源链：有 token 走 IPinfo（配额高、字段全）；无 token 走
-	// ip-api（完全免 key，45 次/分，附机房/代理标志）。信息性，不扣分。
-	if r.ipinfoToken != "" && time.Now().After(r.ipinfoOffUntil) {
+	// 地理源链（信息性，不扣分，逐级兜底）：IPinfo（有 token，配额高）
+	// → ip-api（免 key，45 次/分，附机房标志）→ ipleak（免 key 兜底）。
+	geoDone := false
+	if r.ipinfoToken != "" && r.ipinfoState.available() {
 		if data, err := r.queryIPinfo(ip); err != nil {
 			r.noteIPinfoFailure()
 		} else {
@@ -281,17 +306,33 @@ func (r *ipReputer) check(addr string) *ipRepResult {
 				res.Region = data.Country
 			}
 			res.ASN = shortASN(data)
+			geoDone = res.Region != "" || res.ASN != ""
 		}
-	} else if r.ipinfoToken == "" && time.Now().After(r.ipinfoOffUntil) {
+	}
+	if !geoDone && r.ipAPIState.available() {
 		if data, err := r.queryIPAPI(ip); err != nil {
-			r.noteIPinfoFailure() // 与 IPinfo 共用退避记账：同一角色（地理源）
+			r.noteIPAPIFailure()
 		} else {
-			r.noteIPinfoSuccess()
+			r.noteIPAPISuccess()
 			if data.Country != "" {
 				res.Region = data.Country
 			}
 			res.ASN = shortASFromASField(data.As)
 			res.Hosting = data.Hosting
+			geoDone = res.Region != "" || res.ASN != ""
+		}
+	}
+	if !geoDone && r.ipleakState.available() {
+		if data, err := r.queryIpleak(ip); err != nil {
+			r.noteIpleakFailure()
+		} else {
+			r.noteIpleakSuccess()
+			if data.CountryCode != "" {
+				res.Region = data.CountryCode
+			}
+			if data.AsNumber != 0 {
+				res.ASN = shortASFromParts(data.AsNumber, data.IspName)
+			}
 		}
 	}
 
@@ -357,40 +398,24 @@ func (r *ipReputer) check(addr string) *ipRepResult {
 }
 
 func (r *ipReputer) abuseAvailable() bool {
-	return r.abuseKey != "" && time.Now().After(r.abuseOffUntil)
+	return r.abuseKey != "" && r.abuseState.available()
 }
 
-func (r *ipReputer) noteAbuseFailure() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.abuseFails++
-	if r.abuseFails >= 3 {
-		r.abuseOffUntil = time.Now().Add(ipRepSourceOff)
-		r.abuseFails = 0
-	}
-}
+func (r *ipReputer) noteAbuseFailure() { r.abuseState.note(false) }
 
-func (r *ipReputer) noteAbuseSuccess() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.abuseFails = 0
-}
+func (r *ipReputer) noteAbuseSuccess() { r.abuseState.note(true) }
 
-func (r *ipReputer) noteIPinfoFailure() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.ipinfoFails++
-	if r.ipinfoFails >= 3 {
-		r.ipinfoOffUntil = time.Now().Add(ipRepSourceOff)
-		r.ipinfoFails = 0
-	}
-}
+func (r *ipReputer) noteIPinfoFailure() { r.ipinfoState.note(false) }
 
-func (r *ipReputer) noteIPinfoSuccess() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.ipinfoFails = 0
-}
+func (r *ipReputer) noteIPinfoSuccess() { r.ipinfoState.note(true) }
+
+func (r *ipReputer) noteIPAPIFailure() { r.ipAPIState.note(false) }
+
+func (r *ipReputer) noteIPAPISuccess() { r.ipAPIState.note(true) }
+
+func (r *ipReputer) noteIpleakFailure() { r.ipleakState.note(false) }
+
+func (r *ipReputer) noteIpleakSuccess() { r.ipleakState.note(true) }
 
 type abuseData struct {
 	AbuseConfidenceScore int    `json:"abuseConfidenceScore"`
@@ -489,6 +514,46 @@ func (r *ipReputer) queryIPAPI(ip string) (*ipAPIResp, error) {
 		return nil, fmt.Errorf("ip-api: %s", data.Message)
 	}
 	return &data, nil
+}
+
+type ipLeakResp struct {
+	AsNumber    int    `json:"as_number"`
+	IspName     string `json:"isp_name"`
+	CountryCode string `json:"country_code"`
+}
+
+// queryIpleak 免 key 地理兜底（ipleak.net/json/{ip}，无公开配额文档，
+// 仅作为 ip-api 失败后的低频兜底，带独立退避）。
+func (r *ipReputer) queryIpleak(ip string) (*ipLeakResp, error) {
+	resp, err := r.client.Get(r.ipleakBase + "/json/" + ip)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ipleak status %d", resp.StatusCode)
+	}
+	var data ipLeakResp
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	return &data, nil
+}
+
+// shortASFromParts 从 as_number + isp_name 组装 "AS9009 M247" 短形态。
+func shortASFromParts(asNumber int, isp string) string {
+	if asNumber == 0 {
+		return isp
+	}
+	fields := strings.Fields(isp)
+	name := ""
+	if len(fields) > 0 {
+		name = fields[0]
+	}
+	if name == "" {
+		return fmt.Sprintf("AS%d", asNumber)
+	}
+	return fmt.Sprintf("AS%d %s", asNumber, name)
 }
 
 // shortASFromASField 从 ip-api 的 as 字段（"AS9009 M247 Europe SRL"）
