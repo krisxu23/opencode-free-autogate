@@ -212,7 +212,7 @@ https://proxy.amux.ai/api/proxies
 | **请求指纹整形** | 出站 body 顶层键序统一对齐原生 CLI 构造序（chat 形态取自 @ai-sdk/openai-compatible 源码、responses 形态取自 OmniRoute 抓包），消灭"改写过=字母序、没改过=原序"的双指纹特征；Anthropic `/v1/messages` 无可靠依据，刻意不整形 |
 | **SSE 分块卫生** | 直通流与吸收流双路径：丢弃解析失败的 `data:` 行（上游夹带的错误页不再喂给客户端）、删除空 `tool_calls:[]`、补缺失的 object/created 字段；>1MB 整行透传、截断维持静默干净关闭语义 |
 | **sing-box 惰性映射** | 高级协议节点（vless/vmess/trojan/hysteria2/tuic）交由内嵌 sing-box 转成本地 socks 端口；初检失败/复检淘汰的死链自动移出映射集并入 6 小时冷却，sing-box 实例从"只增不减"变为随正式池规模收敛（首轮仍需全量映射用于初检，之后每轮收缩重建） |
-| **IP 信誉体检（双层多源）** | 只体检正式池节点（转正时查一次 + 每日重查，按解析后 IP 缓存 7 天，同 IP 多端口共享结果）：**第一层 Blackbox v3beta**（免 key 无注册，hosting/proxy/vpn/tor/spamhaus/suspicious 信号打分，必得结果）+ **第二层 iprisk.top**（聚合 16 个数据源，站点有缓存结果时混合评分，新 IP 的表单外壳页静默跳过）+ ip-api 地理（地区偏好数据源）；排序采用原始分数降序（未体检 = 中性 50）；fail-open——任何源故障都不影响节点使用 |
+| **IP 信誉体检（双层多源）** | 只体检正式池节点（转正时查一次 + 每日重查，按解析后 IP 缓存 7 天，同 IP 多端口共享结果；3 路并发体检 + ip-api 专用限速，全池打完标签约 3-4 分钟）：**第一层 Blackbox v3beta**（免 key 无注册，hosting/proxy/vpn/tor/spamhaus/suspicious 信号打分，必得结果）+ **第二层 iprisk.top**（聚合 16 个数据源，站点有缓存结果时混合评分，新 IP 的表单外壳页静默跳过）+ ip-api 地理（地区偏好数据源）；排序采用原始分数降序（未体检 = 中性 50）；fail-open——任何源故障都不影响节点使用 |
 | **双供应商统一出口** | OpenCode（opencode.ai/zen）与 Cline（OAuth 反代）两个供应商统一纳入一套出口模型：节点池是全局资源，每个供应商页一个开关决定走多 IP 轮询出口还是直连（OpenCode 默认开、Cline 默认关）；凡走池的供应商共用同一套出口记账（评分/坐板凳/全局熔断），坏出口两家一起避开 |
 | **统一日志出口** | 防洪水（相同日志 5 秒窗口合并 + 每秒 50 行限速）、全行脱敏兜底（sk- Key / Bearer / api_key= 一律掩码）、logs/gateway.log 轮转落盘（单文件 10MB 保留 5 份）；收尾行带会话标签/模型/首字节/token，并发与竞速日志按标签归属 |
 | **SSE 保活心跳** | 竞速/吸收静默期按客户端协议注入心跳：chat 发空 delta chunk、Codex responses 发 `response.in_progress`（其 eventsource 解析器不认注释行，300 秒空闲超时需要真实事件复位）、Anthropic 发 `event: ping` |

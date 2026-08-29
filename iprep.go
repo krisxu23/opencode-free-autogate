@@ -35,16 +35,18 @@ import (
 //   - 信誉是排序先验不是判决：只影响出场顺序，绝不单独剔除节点。
 
 const (
-	ipRepTTL          = 7 * 24 * time.Hour // 体检结果缓存期
-	ipRepInterval     = 2 * time.Second    // 串行 worker 相邻请求间隔（对第三方礼貌）
-	ipRepResolveTTL   = time.Hour          // 域名出口 → IP 的解析缓存
-	ipRepSourceOff    = 30 * time.Minute   // 连续失败后的源退避
-	ipRepSourceFails  = 5                  // 触发退避的连续失败次数（扫池高峰抖动多，别太敏感）
-	ipRepTimeout      = 12 * time.Second   // JSON 源单次查询超时
-	ipRepPageTimeout  = 8 * time.Second    // iprisk 页面单次抓取超时（增强层不许久拖）
-	ipRepRefreshEvery = 24 * time.Hour     // 正式池重查周期
-	ipRepMaxCache     = 4096               // 结果缓存上限
-	repUnknown        = -1                 // Score 取值：未体检/体检失败
+	ipRepTTL          = 7 * 24 * time.Hour      // 体检结果缓存期
+	ipRepWorkers      = 3                       // 并发体检 worker 数（ip-api 专用限速兜底）
+	ipRepNodeGap      = 400 * time.Millisecond  // 单 worker 相邻节点间隔
+	geoMinInterval    = 1400 * time.Millisecond // ip-api 45 次/分限速：geo 查询全局限速
+	ipRepResolveTTL   = time.Hour               // 域名出口 → IP 的解析缓存
+	ipRepSourceOff    = 30 * time.Minute        // 连续失败后的源退避
+	ipRepSourceFails  = 5                       // 触发退避的连续失败次数（扫池高峰抖动多，别太敏感）
+	ipRepTimeout      = 12 * time.Second        // JSON 源单次查询超时
+	ipRepPageTimeout  = 8 * time.Second         // iprisk 页面单次抓取超时（增强层不许久拖）
+	ipRepRefreshEvery = 24 * time.Hour          // 正式池重查周期
+	ipRepMaxCache     = 4096                    // 结果缓存上限
+	repUnknown        = -1                      // Score 取值：未体检/体检失败
 )
 
 // ipRepResult 是一次体检的结果。
@@ -105,6 +107,8 @@ type ipReputer struct {
 	bbBase     string
 	geoBase    string
 	ipapiBase  string
+	geoMu      sync.Mutex
+	geoNext    time.Time
 	pageClient *http.Client
 
 	// 测试注入点
@@ -120,12 +124,16 @@ func isPrivateOrLoopback(ip net.IP) bool {
 }
 
 // srcState 是单数据源的失败退避状态：连续失败达到阈值后停用一段时间。
+// 多 worker 并发访问，内部自带锁。
 type srcState struct {
+	mu       sync.Mutex
 	fails    int
 	offUntil time.Time
 }
 
 func (s *srcState) note(ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if ok {
 		s.fails = 0
 		return
@@ -138,6 +146,8 @@ func (s *srcState) note(ok bool) {
 }
 
 func (s *srcState) available() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return time.Now().After(s.offUntil)
 }
 
@@ -251,18 +261,29 @@ func (r *ipReputer) httpFetch(url string) (int, string, error) {
 	return resp.StatusCode, string(buf[:n]), nil
 }
 
-// start 启动串行体检 worker 与每日重查。
+// start 启动并发体检 worker 与每日重查。
 func (r *ipReputer) start(ctx context.Context) {
-	go func() {
-		refresh := time.NewTicker(ipRepRefreshEvery)
-		defer refresh.Stop()
+	refresh := time.NewTicker(ipRepRefreshEvery)
+	defer refresh.Stop()
+	worker := func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case addr := <-r.queue:
 				r.process(addr)
-				time.Sleep(ipRepInterval)
+				time.Sleep(ipRepNodeGap)
+			}
+		}
+	}
+	for w := 0; w < ipRepWorkers; w++ {
+		go worker()
+	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
 			case <-refresh.C:
 				if r.refresh != nil {
 					for _, addr := range r.refresh() {
@@ -663,7 +684,22 @@ type geoResp struct {
 
 // queryGeoCountry 免 key 地理查询（ip-api.com，45 次/分）——仅供地区偏好。
 // 要 countryCode（CN/US/...）：地区分组匹配的是国家码而非国家名。
+// paceGeo ip-api 全局限速：多 worker 并发时 geo 查询串行化到 45 次/分以内。
+func (r *ipReputer) paceGeo() {
+	r.geoMu.Lock()
+	wait := time.Until(r.geoNext)
+	if wait <= 0 {
+		r.geoNext = time.Now().Add(geoMinInterval)
+		r.geoMu.Unlock()
+		return
+	}
+	r.geoNext = time.Now().Add(geoMinInterval)
+	r.geoMu.Unlock()
+	time.Sleep(wait)
+}
+
 func (r *ipReputer) queryGeoCountry(ip string) (string, error) {
+	r.paceGeo()
 	status, body, err := r.fetch(r.geoBase + "/" + url.QueryEscape(ip) + "?fields=status,countryCode")
 	if err != nil {
 		return "", err
