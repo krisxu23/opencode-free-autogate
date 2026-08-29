@@ -128,10 +128,10 @@ func saveCredentials(rt string) {
 	c := clineCredentials{RefreshToken: rt}
 	data, _ := json.MarshalIndent(c, "", "  ")
 	if err := os.WriteFile(clineCredentialsPath, data, 0600); err != nil {
-		log.Printf("[cline] Failed to save credentials: %v", err)
+		log.Printf("[Cline] Failed to save credentials: %v", err)
 		return
 	}
-	log.Printf("[cline] Credentials saved to %s", clineCredentialsPath)
+	log.Printf("[Cline] Credentials saved to %s", clineCredentialsPath)
 }
 
 // ── WorkOS Device Authorization ──────────────────────────────────────────────
@@ -263,7 +263,7 @@ func getClineToken() (string, error) {
 			saveCredentials(clineCachedRefreshTok)
 			return clineCachedToken, nil
 		}
-		log.Printf("[cline] Token refresh failed: %v", err)
+		log.Printf("[Cline] Token refresh failed: %v", err)
 	}
 	return "", fmt.Errorf("no valid credentials. Run with --login flag first")
 }
@@ -479,7 +479,7 @@ func saveClinePoolLocked() {
 	defer clinePoolSaveMu.Unlock()
 	data, _ := json.MarshalIndent(clinePool, "", "  ")
 	if err := os.WriteFile(clinePoolPath, data, 0600); err != nil {
-		log.Printf("[cline] Failed to save accounts: %v", err)
+		log.Printf("[Cline] Failed to save accounts: %v", err)
 	}
 }
 

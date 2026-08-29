@@ -211,6 +211,7 @@ https://proxy.amux.ai/api/proxies
 | **请求体卫生** | 自动剔除缺失 function.name 的工具条目（chat 形态按 function.name 判定、Codex /v1/responses 扁平形态按顶层 name 判定，两者都不误删）、tools 超 128 截断、剥离 client_metadata、空 `tool_calls.arguments` 补 `"{}"`（Minimax 系严格上游会对空参数拒收整个请求）——畸形请求体不再烧掉出口尝试 |
 | **请求指纹整形** | 出站 body 顶层键序统一对齐原生 CLI 构造序（chat 形态取自 @ai-sdk/openai-compatible 源码、responses 形态取自 OmniRoute 抓包），消灭"改写过=字母序、没改过=原序"的双指纹特征；Anthropic `/v1/messages` 无可靠依据，刻意不整形 |
 | **SSE 分块卫生** | 直通流与吸收流双路径：丢弃解析失败的 `data:` 行（上游夹带的错误页不再喂给客户端）、删除空 `tool_calls:[]`、补缺失的 object/created 字段；>1MB 整行透传、截断维持静默干净关闭语义 |
+| **统一日志出口** | 防洪水（相同日志 5 秒窗口合并 + 每秒 50 行限速）、全行脱敏兜底（sk- Key / Bearer / api_key= 一律掩码）、logs/gateway.log 轮转落盘（单文件 10MB 保留 5 份）；收尾行带会话标签/模型/首字节/token，并发与竞速日志按标签归属 |
 | **SSE 保活心跳** | 竞速/吸收静默期按客户端协议注入心跳：chat 发空 delta chunk、Codex responses 发 `response.in_progress`（其 eventsource 解析器不认注释行，300 秒空闲超时需要真实事件复位）、Anthropic 发 `event: ping` |
 | **非 SSE 形态拦截** | 流式请求收到 HTML 错误页/被忽略 stream 的 JSON 时，在 Content-Type 层直接拦下换出口重试，不让垃圾进入转发管道（9router 经验） |
 | **中流续写** | 透传流中途断流且未到终止标记时，自动以已发文本作 assistant prefill 补尾一次，接缝去重（重叠/重启双形态）后无缝交付终止标记——免费上游断流不再迫使客户端整轮重烧配额（仅 chat 形态，`PROXY_STREAM_RESUME` 可关） |

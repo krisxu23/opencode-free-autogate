@@ -58,6 +58,53 @@ type requestTrace struct {
 	finalStatus    int
 	upstream       string
 	winnerUpstream string // 竞速赢家实际使用的上游基址（完整 URL），供镜像记账
+	tag            string        // 日志关联标签（会话短标识）：并发请求/竞速尝试靠它归属
+	model          string        // 请求模型（收尾行展示）
+	firstByte      time.Duration // 响应头到达耗时；未知为 0（收尾行展示）
+	usage          *usageSnapshot // 每请求 token 用量（收尾行展示）
+}
+
+// usageSnapshot 是单请求 token 用量快照，供收尾日志展示；日聚合仍走 usageStats。
+type usageSnapshot struct {
+	model      string
+	prompt     int64
+	completion int64
+	cached     int64
+}
+
+// tagString 返回带前导空格的日志标签；无标签时返回空串，调用方直接
+// 内嵌进格式串（"[S级]%s ..."）不产生双空格。
+func (t *requestTrace) tagString() string {
+	if t == nil || t.tag == "" {
+		return ""
+	}
+	return " " + t.tag
+}
+
+// noteFirstByte 记录响应头到达耗时（每个请求只记第一个成功交付的响应）。
+// 只在调度协程串行调用，竞速输家不会触碰。
+func (t *requestTrace) noteFirstByte(resp *gatewayResponse) {
+	if t == nil || resp == nil || resp.live == nil || t.firstByte != 0 {
+		return
+	}
+	if wait := resp.live.headerAt.Sub(t.start); wait > 0 {
+		t.firstByte = wait
+	}
+}
+
+// sessionTag 取会话标识的短形态作日志标签：同会话同标签（多轮对话可
+// 串联），派生不出时为空。
+func sessionTag(session string) string {
+	if session == "" {
+		return ""
+	}
+	if i := strings.IndexByte(session, '_'); i >= 0 && len(session) > i+7 {
+		return session[:i+7] // 前缀 + 6 位哈希，如 ses_ab12cd
+	}
+	if len(session) > 12 {
+		return session[:12]
+	}
+	return session
 }
 
 func newRequestTrace() *requestTrace {
@@ -1360,7 +1407,7 @@ func (g *gateway) dispatch(ctx context.Context, request upstreamRequest, trace *
 			current.upstream = g.pickUpstream()
 		}
 		if len(pool) > 1 {
-			log.Printf("[镜] 上游: %s", shortUpstream(current.upstream))
+			log.Printf("[镜]%s 上游: %s", trace.tagString(), shortUpstream(current.upstream))
 		}
 		trace.upstream = shortUpstream(current.upstream)
 		response, err := g.dispatchOnce(ctx, current, trace)
@@ -1443,7 +1490,7 @@ func (g *gateway) dispatchOnce(ctx context.Context, request upstreamRequest, tra
 				return nil, err
 			}
 			if !errors.Is(err, errNoProxy) && !errors.Is(err, errAllExitsFailed) {
-				log.Printf("[层错] %s: %v", layer, err)
+				log.Printf("[层错]%s %s: %v", trace.tagString(), layer, err)
 			}
 			continue
 		}
@@ -1482,21 +1529,22 @@ func (g *gateway) dispatchPublicLayer(ctx context.Context, request upstreamReque
 		}
 		tried[candidate.addr] = struct{}{}
 		trace.addAttempt(candidate.addr)
-		log.Printf("[S级] %s (%d/%d)", candidate.addr, retry+1, g.cfg.slotRetries)
+		log.Printf("[S级]%s %s (%d/%d)", trace.tagString(), candidate.addr, retry+1, g.cfg.slotRetries)
 		response, err := g.perform(ctx, request, candidate.proxyURL)
 		if err != nil {
 			if isTerminalContextError(ctx, err) {
 				return nil, err
 			}
-			log.Printf("[错] %s: %v", candidate.addr, err)
+			log.Printf("[错]%s %s: %v", trace.tagString(), candidate.addr, err)
 			g.dropSlot(candidate.addr)
 			continue
 		}
 		if !retryableStatus(response.status) {
 			trace.finalProxy = candidate.addr
+			trace.noteFirstByte(response)
 			return response, nil
 		}
-		log.Printf("[错码] %s 状态码 %d", candidate.addr, response.status)
+		log.Printf("[错码]%s %s 状态码 %d", trace.tagString(), candidate.addr, response.status)
 		g.dropSlot(candidate.addr)
 		last = response
 		lastProxy = candidate.addr
@@ -1524,23 +1572,24 @@ func (g *gateway) dispatchCustomLayer(ctx context.Context, request upstreamReque
 			break
 		}
 		trace.addAttempt(candidate.addr)
-		log.Printf("[自定义] %s (%d/%d)", candidate.addr, retry+1, maxRetries)
+		log.Printf("[自定义]%s %s (%d/%d)", trace.tagString(), candidate.addr, retry+1, maxRetries)
 		response, err := g.perform(ctx, request, candidate.proxyURL)
 		if err != nil {
 			if isTerminalContextError(ctx, err) {
 				return nil, err
 			}
 			g.noteCustomResult(candidate.addr, false)
-			log.Printf("[错] %s: %v", candidate.addr, err)
+			log.Printf("[错]%s %s: %v", trace.tagString(), candidate.addr, err)
 			continue
 		}
 		if !retryableStatus(response.status) {
 			g.noteCustomResult(candidate.addr, true)
 			trace.finalProxy = candidate.addr
+			trace.noteFirstByte(response)
 			return response, nil
 		}
 		// 注意：429 等状态码说明节点能连通上游（只是暂时限流），不算节点故障。
-		log.Printf("[错码] %s 状态码 %d", candidate.addr, response.status)
+		log.Printf("[错码]%s %s 状态码 %d", trace.tagString(), candidate.addr, response.status)
 		last = response
 		lastProxy = candidate.addr
 	}
@@ -1737,7 +1786,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 					exits = append(exits[:i], exits[i+1:]...)
 					exits = append([]slot{pinned}, exits...)
 					firstWave = 1
-					log.Printf("[粘性] %s 钉住 %s（首批单发，吃上游提示缓存）", request.session, addr)
+					log.Printf("[粘性]%s %s 钉住 %s（首批单发，吃上游提示缓存）", trace.tagString(), request.session, addr)
 					break
 				}
 			}
@@ -1750,7 +1799,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 		directLaunched = true
 	}
 	armHedge()
-	log.Printf("[竞速] 对冲竞速：%d 个出口待发，已发 %d 路（含直连）", len(exits), launchedCount())
+	log.Printf("[竞速]%s 对冲竞速：%d 个出口待发，已发 %d 路（含直连）", trace.tagString(), len(exits), launchedCount())
 
 	var last *gatewayResponse
 	var lastAddr string
@@ -1772,7 +1821,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 						g.exits.observeTruncation(res.addr)
 						// 空流是上游侧行为，镜像一并记账。
 						g.noteUpstreamResult(res.upstream, false)
-						log.Printf("[流截断] %s 返回空流，换下一出口（镜像 %s）", res.addr, shortUpstream(res.upstream))
+						log.Printf("[流截断]%s %s 返回空流，换下一出口（镜像 %s）", trace.tagString(), res.addr, shortUpstream(res.upstream))
 					} else {
 						g.exits.observeFail(res.addr)
 					}
@@ -1785,7 +1834,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 				if !res.isDirect {
 					if d, src := classifyUpstreamFailure(res.resp.status, res.resp.body, res.resp.header.Get("Retry-After")); src != benchNone {
 						g.exits.observeQuotaBurn(res.addr, d, src)
-						log.Printf("[限流] %s 额度受限，暂停 %s（%s）", res.addr, d.Truncate(time.Second), benchSourceName(src))
+						log.Printf("[限流]%s %s 额度受限，暂停 %s（%s）", trace.tagString(), res.addr, d.Truncate(time.Second), benchSourceName(src))
 					}
 				}
 				// 限流/5xx 不算赢家；留第一个作为全军覆没时的兜底，重复的直接关闭。
@@ -1814,6 +1863,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 			trace.finalProxy = res.addr
 			trace.upstream = shortUpstream(res.upstream)
 			trace.winnerUpstream = res.upstream
+			trace.noteFirstByte(res.resp)
 			if res.resp.live != nil && res.headerElapsed > 0 {
 				log.Printf("[竞速] 胜出: %s | 镜像:%s | 总耗时 %s（到响应头 %s + 到首数据 %s）",
 					res.addr, trace.upstream,
@@ -1847,7 +1897,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 		}
 	}
 	if last != nil {
-		log.Printf("[竞速] 本轮 %d 个出口均未交付可用响应，交出可重试兜底: %s（正式池 %d 个仍在册）",
+		log.Printf("[竞速]%s 本轮 %d 个出口均未交付可用响应，交出可重试兜底: %s（正式池 %d 个仍在册）", trace.tagString(),
 			launchedCount(), lastAddr, g.customCount())
 		trace.finalProxy = lastAddr
 		trace.upstream = shortUpstream(lastUpstream)
@@ -1857,7 +1907,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 	// 区分「池子空了」和「池子有节点但这一轮全部未交付」：后者绝大多数是
 	// 上游/链路侧问题，不该向用户报「没有可用代理」。
 	if g.customCount() > 0 {
-		log.Printf("[竞速] 本轮 %d 路全部失败，但正式池仍有 %d 个节点在册——按上游侧故障处理，稍后重试",
+		log.Printf("[竞速]%s 本轮 %d 路全部失败，但正式池仍有 %d 个节点在册——按上游侧故障处理，稍后重试", trace.tagString(),
 			launchedCount(), g.customCount())
 		return nil, errAllExitsFailed
 	}
@@ -1913,20 +1963,21 @@ func (g *gateway) dispatchZen(ctx context.Context, request upstreamRequest, trac
 			return nil, err
 		}
 		trace.addAttempt("ZenProxy")
-		log.Printf("[ZenProxy] (%d/%d)", retry+1, retries)
+		log.Printf("[ZenProxy]%s (%d/%d)", trace.tagString(), retry+1, retries)
 		response, err := g.performRelay(ctx, request)
 		if err != nil {
 			if isTerminalContextError(ctx, err) {
 				return nil, err
 			}
-			log.Printf("[ZenProxy] 错误: %v", err)
+			log.Printf("[ZenProxy]%s 错误: %v", trace.tagString(), err)
 			continue
 		}
 		if !retryableStatus(response.status) {
 			trace.finalProxy = "ZenProxy"
+			trace.noteFirstByte(response)
 			return response, nil
 		}
-		log.Printf("[ZenProxy] 状态码 %d，重试", response.status)
+		log.Printf("[ZenProxy]%s 状态码 %d，重试", trace.tagString(), response.status)
 		last = response
 	}
 	if last != nil {
@@ -1996,12 +2047,13 @@ func (g *gateway) performRelay(ctx context.Context, request upstreamRequest) (*g
 
 func (g *gateway) dispatchDirect(ctx context.Context, request upstreamRequest, trace *requestTrace) (*gatewayResponse, error) {
 	trace.addAttempt("direct")
-	log.Printf("[直连] directly connecting to upstream")
+	log.Printf("[直连]%s directly connecting to upstream", trace.tagString())
 	response, err := g.perform(ctx, request, nil)
 	if err != nil {
 		return nil, err
 	}
 	trace.finalProxy = "direct"
+	trace.noteFirstByte(response)
 	return response, nil
 }
 

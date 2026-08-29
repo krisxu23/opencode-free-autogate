@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -41,21 +42,37 @@ func main() {
 	gui := strings.EqualFold(uiMode, "gui")
 
 	settingsPath := configPath()
+	// 统一日志出口最先就位：界面/控制台 + logs/gateway.log 轮转文件双写，
+	// 全行脱敏与防洪水兜底——后续所有日志（含首次运行的 Key 提示）都走这里。
+	var logSinks []io.Writer
+	if gui {
+		logSinks = append(logSinks, uiLog)
+	} else {
+		logSinks = append(logSinks, os.Stderr)
+	}
+	logKit := newLogKit(logSinks...)
+	log.SetOutput(logKit)
+	if path := logKit.openFile(filepath.Dir(settingsPath)); path != "" {
+		log.Printf("[日志] 文件日志已开启：%s（单文件 %dMB，保留 %d 份）", path, logFileMaxSize>>20, logFileBackups)
+	} else {
+		log.Printf("[日志] 文件日志开启失败，仅输出到界面/控制台")
+	}
+
 	settings := loadSettings(settingsPath)
 	// 首次运行无 config.json 时自动保存默认配置（含随机生成的 Key），
-	// 确保后续启动复用同一个 Key。
+	// 确保后续启动复用同一个 Key。Key 只展示掩码：日志会被用户整段贴出求助，
+	// 完整 Key 请到 config.json 或界面查看。
 	if _, err := os.Stat(settingsPath); os.IsNotExist(err) {
 		if saveErr := settings.save(settingsPath); saveErr != nil {
 			log.Printf("[配置] 自动保存默认配置失败: %v", saveErr)
 		} else {
-			log.Printf("[配置] 首次运行，已生成 config.json（Key: %s）", settings.GatewayKey)
+			log.Printf("[配置] 首次运行，已生成 config.json（Key: %s；完整 Key 见 config.json 或界面）", maskSecret(settings.GatewayKey))
 		}
 	}
 	// config.json 在 GUI 与控制台两种模式下都生效（行为一致）；
 	// 已显式导出的环境变量仍然优先，不会被配置文件覆盖。
 	settings.applyEnv()
 	if gui {
-		log.SetOutput(uiLog)
 		log.Printf("[启动] 界面模式已激活，日志缓冲就绪")
 	}
 
@@ -203,7 +220,8 @@ func logStartup(cfg config) {
 	if cfg.project.gatewayAuth {
 		state := "未启用（任何人可访问）"
 		if cfg.gatewayKey != "" {
-			state = cfg.gatewayKey
+			// Key 只出掩码：启动日志同样会被整段贴出求助。
+			state = "已启用 " + maskSecret(cfg.gatewayKey)
 		}
 		log.Printf("[门] 认证:      %s", state)
 	}
@@ -367,6 +385,9 @@ func (a *app) handlePost(w http.ResponseWriter, r *http.Request, path string, de
 
 	payload := parseJSONObject(body)
 	ids := deriveRequestIDs(r.Header, payload)
+	// 日志关联标签与模型名：从这里往后所有过程/收尾日志可归属到具体会话。
+	trace.tag = sessionTag(ids.Session)
+	trace.model, _ = payload["model"].(string)
 	stream := wantsStream(r.Header, payload)
 	// 本地管家拦截：客户端的配额探测类请求零上游消耗直接应答。
 	if canned, hit := tryLocalHousekeeping(a.gateway.cfg.localMocks, path, stream, payload); hit {
@@ -600,6 +621,7 @@ type streamOptions struct {
 	observe       func(truncated bool)
 	hyg           *sseSanitizer
 	resumer       *streamResumer // 中流续写；nil 表示不支持续写的形态
+	usage         *usageSnapshot // 每请求 token 用量快照，streamResponse 回填
 }
 
 // writeCommittedStream 处理已提前提交 SSE 头的响应：赢家的流直接透传；
@@ -736,7 +758,7 @@ func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace
 		default:
 			response = jsonGatewayResponse(http.StatusBadGateway, "上游请求失败")
 		}
-		log.Printf("[请求错] %s %s: %v", r.Method, r.URL.Path, err)
+		log.Printf("[请求错]%s %s %s: %v", trace.tagString(), r.Method, r.URL.Path, err)
 	}
 	if response == nil {
 		response = jsonGatewayResponse(http.StatusBadGateway, "上游请求失败")
@@ -745,12 +767,14 @@ func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace
 	if trace.finalProxy == "" && trace.attempts == 0 {
 		trace.finalProxy = "local"
 	}
-	a.logCompletion(r, trace)
+	// 界面健康色即时更新（原在 logCompletion 内）；收尾日志行移到
+	// 响应交付之后——耗时含流式全程，流式 token 也能进收尾行。
+	a.gateway.lastStatus.Store(int32(trace.finalStatus))
 	// 流式响应结束后由 streamResponse 回报是否见到终止标记：
 	// 没见到即视为中途夭折，出口降权、镜像记账，下次绕开。
 	observe := func(truncated bool) {
 		if truncated {
-			log.Printf("[流截断] %s | 出口:%s | 上游:%s | 流未带终止标记即结束", r.URL.Path, trace.finalProxy, trace.upstream)
+			log.Printf("[流截断]%s %s | 出口:%s | 上游:%s | 流未带终止标记即结束", trace.tagString(), r.URL.Path, trace.finalProxy, trace.upstream)
 			a.gateway.noteStreamTruncation(trace.finalProxy, trace.upstream)
 			return
 		}
@@ -762,12 +786,14 @@ func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace
 	if a.gateway.cfg.sseHygiene && response != nil && response.live != nil {
 		hyg = newSSESanitizer()
 	}
+	var reqUsage usageSnapshot
 	opts := streamOptions{
 		idle:          a.gateway.cfg.streamIdle,
 		stallWindow:   a.gateway.cfg.stallWindow,
 		stallMinBytes: a.gateway.cfg.stallMinBytes,
 		observe:       observe,
 		hyg:           hyg,
+		usage:         &reqUsage,
 	}
 	// 中流续写：仅 chat 形态且响应来自上游（带 origin）时配备；
 	// eligible/resume 内部再做开关、工具调用与预算把关。
@@ -783,19 +809,21 @@ func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace
 	if a.gateway.usage != nil && response != nil && response.live == nil && len(response.body) > 0 {
 		if m, us, ok := ExtractLastUsage(response.body); ok {
 			a.gateway.usage.Observe(m, us.PromptTokens, us.CompletionTokens, us.CachedTokens)
+			trace.usage = &usageSnapshot{model: m, prompt: us.PromptTokens, completion: us.CompletionTokens, cached: us.CachedTokens}
 		}
 	}
 	if guard != nil && guard.Committed() {
 		// 响应头已提前提交，状态码无法再改变：赢家流透传，其余转为 SSE 错误事件。
 		writeCommittedStream(w, r, response, opts)
+		a.logCompletion(r, trace)
 		return
 	}
 	writeGatewayResponse(w, r, response, opts)
+	a.logCompletion(r, trace)
 }
 
 func (a *app) logCompletion(r *http.Request, trace *requestTrace) {
 	status := trace.finalStatus
-	a.gateway.lastStatus.Store(int32(status))
 	result := "完成"
 	if status < 200 || status >= 400 {
 		result = "失败"
@@ -808,8 +836,22 @@ func (a *app) logCompletion(r *http.Request, trace *requestTrace) {
 	if proxy == "" {
 		proxy = "unknown"
 	}
-	log.Printf("[%s] %s %s | 状态:%d | 重试:%d | 代理IP:%d | 耗时:%dms | 代理:%s",
-		result, r.Method, r.URL.Path, status, retries, len(trace.proxies), time.Since(trace.start).Milliseconds(), proxy)
+	line := fmt.Sprintf("[%s]%s %s %s | 状态:%d | 重试:%d | 出口:%d | 耗时:%dms | 代理:%s",
+		result, trace.tagString(), r.Method, r.URL.Path, status, retries,
+		len(trace.proxies), time.Since(trace.start).Milliseconds(), proxy)
+	if trace.model != "" {
+		line += fmt.Sprintf(" | 模型:%s", trace.model)
+	}
+	if trace.firstByte > 0 {
+		line += fmt.Sprintf(" | 首字节:%dms", trace.firstByte.Milliseconds())
+	}
+	if u := trace.usage; u != nil && (u.prompt > 0 || u.completion > 0) {
+		line += fmt.Sprintf(" | 入:%d 出:%d", u.prompt, u.completion)
+		if u.cached > 0 {
+			line += fmt.Sprintf(" 缓存:%d", u.cached)
+		}
+	}
+	log.Print(line)
 }
 
 func writeGatewayResponse(w http.ResponseWriter, r *http.Request, response *gatewayResponse, opts streamOptions) {
@@ -935,6 +977,9 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 			}
 			if m, us, ok := ExtractLastUsage([]byte(line)); ok {
 				usageObserver(m, us.PromptTokens, us.CompletionTokens, us.CachedTokens)
+				if opts.usage != nil {
+					*opts.usage = usageSnapshot{model: m, prompt: us.PromptTokens, completion: us.CompletionTokens, cached: us.CachedTokens}
+				}
 			}
 		}
 	}

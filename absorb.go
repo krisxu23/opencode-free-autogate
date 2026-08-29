@@ -57,7 +57,7 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 		if g.outage.Tripped() {
 			if !stormLogged {
 				stormLogged = true
-				log.Printf("[吸收] 全局熔断生效，切换指数退避")
+				log.Printf("[吸收]%s 全局熔断生效，切换指数退避", trace.tagString())
 			}
 			if g.outage.TryProbe() {
 				return // 半开探针：跳过本次退避，立即放行一次尝试验证恢复
@@ -74,7 +74,7 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 			return nil, ctx.Err()
 		}
 		if time.Until(overall) < 2*time.Second {
-			log.Printf("[吸收] 总预算将尽，停止于第 %d/%d 次尝试", attempt-1, maxAttempts)
+			log.Printf("[吸收]%s 总预算将尽，停止于第 %d/%d 次尝试", trace.tagString(), attempt-1, maxAttempts)
 			break
 		}
 		attemptCtx, cancel := context.WithDeadline(ctx, overall)
@@ -84,7 +84,7 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			log.Printf("[吸收] 第 %d/%d 次未取得响应: %v", attempt, maxAttempts, err)
+			log.Printf("[吸收]%s 第 %d/%d 次未取得响应: %v", trace.tagString(), attempt, maxAttempts, err)
 			pauseAbsorb(attempt)
 			continue
 		}
@@ -95,7 +95,7 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 				if fallback == nil {
 					fallback = resp // 与竞速同约定：全灭时交出的最后兜底
 				}
-				log.Printf("[吸收] 第 %d/%d 次可重试错误 status=%d，换道", attempt, maxAttempts, resp.status)
+				log.Printf("[吸收]%s 第 %d/%d 次可重试错误 status=%d，换道", trace.tagString(), attempt, maxAttempts, resp.status)
 				pauseAbsorb(attempt)
 				continue
 			}
@@ -106,7 +106,7 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 		cancel()
 		if rerr != nil {
 			g.noteStreamTruncation(trace.finalProxy, trace.upstream)
-			log.Printf("[吸收] 第 %d/%d 次读取失败（出口:%s）: %v", attempt, maxAttempts, trace.finalProxy, rerr)
+			log.Printf("[吸收]%s 第 %d/%d 次读取失败（出口:%s）: %v", trace.tagString(), attempt, maxAttempts, trace.finalProxy, rerr)
 			pauseAbsorb(attempt)
 			continue
 		}
@@ -117,7 +117,7 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 		}
 		if !streamComplete(data) {
 			g.noteStreamTruncation(trace.finalProxy, trace.upstream)
-			log.Printf("[吸收] 第 %d/%d 次截断（出口:%s 镜像:%s），换道重试", attempt, maxAttempts, trace.finalProxy, trace.upstream)
+			log.Printf("[吸收]%s 第 %d/%d 次截断（出口:%s 镜像:%s），换道重试", trace.tagString(), attempt, maxAttempts, trace.finalProxy, trace.upstream)
 			cancel() // 释放 attemptCtx 的 deadline timer，防止泄漏
 			continue
 		}
@@ -126,12 +126,12 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 			header.Set("Content-Type", "text/event-stream; charset=utf-8")
 		}
 		g.outage.NoteSuccess() // 完整回复=上游活着：半开探针成功则提前解除熔断
-		log.Printf("[吸收] 第 %d 次尝试取得完整回复（出口:%s 镜像:%s，%d 字节）",
-			attempt, trace.finalProxy, trace.upstream, len(data))
+		log.Printf("[吸收]%s 第 %d 次尝试取得完整回复（出口:%s 镜像:%s，%d 字节）",
+			trace.tagString(), attempt, trace.finalProxy, trace.upstream, len(data))
 		return &gatewayResponse{status: http.StatusOK, header: header, body: data}, nil
 	}
 	if fallback != nil {
-		log.Printf("[吸收] 尝试用尽，交出可重试兜底 status=%d", fallback.status)
+		log.Printf("[吸收]%s 尝试用尽，交出可重试兜底 status=%d", trace.tagString(), fallback.status)
 		return fallback, nil
 	}
 	return nil, errStreamTruncated

@@ -94,27 +94,27 @@ func (r *streamResumer) resume(w http.ResponseWriter, ctx context.Context, sentT
 	request := r.origin
 	request.body = body
 	request.deadline = deadline
-	log.Printf("[续写] 流中断于 %d 字节文本，追加 assistant prefill 补尾（出口:%s）",
-		len(sentText), r.trace.finalProxy)
+	log.Printf("[续写]%s 流中断于 %d 字节文本，追加 assistant prefill 补尾（出口:%s）",
+		r.trace.tagString(), len(sentText), r.trace.finalProxy)
 	resp, err := r.gateway.dispatch(ctx, request, r.trace)
 	if err != nil {
-		log.Printf("[续写] 补尾请求失败: %v", err)
+		log.Printf("[续写]%s 补尾请求失败: %v", r.trace.tagString(), err)
 		return false
 	}
 	if resp.live == nil {
-		log.Printf("[续写] 补尾请求得到非流式响应 status=%d，放弃", resp.status)
+		log.Printf("[续写]%s 补尾请求得到非流式响应 status=%d，放弃", r.trace.tagString(), resp.status)
 		return false
 	}
 	data, rerr := resp.live.readAll(deadline)
 	if rerr != nil {
-		log.Printf("[续写] 补尾流读取失败: %v", rerr)
+		log.Printf("[续写]%s 补尾流读取失败: %v", r.trace.tagString(), rerr)
 		return false
 	}
 	if r.gateway.cfg.sseHygiene {
 		data = sanitizeSSEBytes(data)
 	}
 	if !streamComplete(data) {
-		log.Printf("[续写] 补尾流仍不完整，放弃并回落静默关闭")
+		log.Printf("[续写]%s 补尾流仍不完整，放弃并回落静默关闭", r.trace.tagString())
 		return false
 	}
 	newText, finishReason := extractStreamText(data)
@@ -130,8 +130,8 @@ func (r *streamResumer) resume(w http.ResponseWriter, ctx context.Context, sentT
 	if err := writeResumeTail(w, model, remaining, finishReason); err != nil {
 		return false
 	}
-	log.Printf("[续写] 补尾完成：剔除接缝 %d 字节，交付 %d 字节 + 终止标记 %q",
-		len(newText)-len(remaining), len(remaining), finishReason)
+	log.Printf("[续写]%s 补尾完成：剔除接缝 %d 字节，交付 %d 字节 + 终止标记 %q",
+		r.trace.tagString(), len(newText)-len(remaining), len(remaining), finishReason)
 	return true
 }
 

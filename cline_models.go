@@ -113,12 +113,12 @@ func refreshClineModels() {
 	defer client.CloseIdleConnections()
 	res, err := client.Do(req)
 	if err != nil {
-		log.Printf("[cline] 模型拉取失败: %v", err)
+		log.Printf("[Cline] 模型拉取失败: %v", err)
 		return
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		log.Printf("[cline] 模型拉取失败: HTTP %d", res.StatusCode)
+		log.Printf("[Cline] 模型拉取失败: HTTP %d", res.StatusCode)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
@@ -143,7 +143,7 @@ func refreshClineModels() {
 		free = append(free, "cline/"+id)
 	}
 	if len(free) == 0 {
-		log.Printf("[cline] 模型拉取未发现 :free 模型，保留旧缓存")
+		log.Printf("[Cline] 模型拉取未发现 :free 模型，保留旧缓存")
 		return
 	}
 	sort.Strings(free)
@@ -158,7 +158,7 @@ func refreshClineModels() {
 		_ = os.MkdirAll(dir, 0700)
 	}
 	writeFileAtomically(clineModelPath, raw)
-	log.Printf("[cline] 免费模型已更新（%d 个）", len(free))
+	log.Printf("[Cline] 免费模型已更新（%d 个）", len(free))
 }
 
 // writeFileAtomically 原子写文件：先写临时文件再改名覆盖（Windows 上
