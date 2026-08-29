@@ -33,6 +33,8 @@ var configManagedEnvKeys = []string{
 	"PROXY_LIST_URLS",
 	"PROXY_RACE",
 	"PROXY_RACE_WIDTH",
+	"PROXY_POOL_OPENCODE",
+	"PROXY_POOL_CLINE",
 	"GATEWAY_KEY",
 }
 
@@ -56,6 +58,11 @@ type uiSettings struct {
 	PoolInput        string   `json:"pool_input"`         // 节点源链接，回填输入框
 	RaceEnabled      bool     `json:"race_enabled"`       // 并行竞速开关
 	RaceWidth        int      `json:"race_width"`         // 竞速并发路数（同时发往几个出口，2-32，默认8）
+	// 每供应商节点池出口开关（节点池本身是全局资源，见 PoolEnabled/PoolInput）：
+	// OpenCode 用反向字段保持旧 config.json 兼容——缺省 false = 走池（既有行为）；
+	// Cline 缺省 false = 直连（既有行为），开 = 加入多 IP 轮询出口 + 直连兜底。
+	OpenCodePoolOff bool `json:"opencode_pool_off"`
+	ClinePoolEnabled bool `json:"cline_pool_enabled"`
 }
 
 // 节点池默认源已移除：新装用户节点池为空，公共推荐源见 README。
@@ -214,6 +221,18 @@ func (s uiSettings) applyEnv() {
 	}
 	if s.RaceWidth >= 2 {
 		setIfEmpty("PROXY_RACE_WIDTH", fmt.Sprintf("%d", s.RaceWidth))
+	}
+	// 每供应商节点池出口开关：OpenCode 默认开、Cline 默认关（与两个
+	// 字段的零值语义一致——旧 config.json 缺字段时行为不回归）。
+	if s.OpenCodePoolOff {
+		setIfEmpty("PROXY_POOL_OPENCODE", "0")
+	} else {
+		setIfEmpty("PROXY_POOL_OPENCODE", "1")
+	}
+	if s.ClinePoolEnabled {
+		setIfEmpty("PROXY_POOL_CLINE", "1")
+	} else {
+		setIfEmpty("PROXY_POOL_CLINE", "0")
 	}
 	setIfEmpty("GATEWAY_KEY", s.GatewayKey)
 }

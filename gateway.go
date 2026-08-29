@@ -1451,6 +1451,16 @@ func (g *gateway) dispatchOnce(ctx context.Context, request upstreamRequest, tra
 		return g.dispatchZen(ctx, request, trace)
 	}
 
+	// 供应商出口开关（providers.go）：OpenCode 未启用节点池出口时跳过
+	// 全部代理层直接直连；镜像轮换仍生效——那是供应商内部的上游分散，
+	// 与出口 IP 无关。
+	if !g.cfg.poolEnabledFor(providerOpenCode) {
+		if g.cfg.project.directFallback {
+			return g.dispatchDirect(ctx, request, trace)
+		}
+		return nil, errNoProxy
+	}
+
 	var last *gatewayResponse
 	// 并行竞速模式：手动节点 + 轮选在线池节点 + 直连同时出发，最快返回者胜出。
 	// 仅直连模式（PROXY_ORDER=direct）不参与竞速。

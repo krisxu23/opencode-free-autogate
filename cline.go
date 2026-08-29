@@ -37,6 +37,71 @@ var clineHTTPClient = &http.Client{
 	Timeout: 30 * time.Second,
 }
 
+// clineChatClient 聊天转发专用：不能带 Client.Timeout——它会掐断整个
+// Response.Body 读取，30 秒意味着稍长的流式回复必被掉线（旧实现的实际
+// 行为）。响应头等待由 ResponseHeaderTimeout 兜底，流中停顿交给空闲看门狗
+// 语义之外的上游截止（attemptCtx 带 deadline）。
+var clineChatClient = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:          20,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       60 * time.Second,
+		ResponseHeaderTimeout: 120 * time.Second,
+	},
+}
+
+// clineUpstreamBase 可测性注入点：测试指到 httptest 上游。
+var clineUpstreamBase = clineAPIBase
+
+// clineMaxExitAttempts 是启用节点池后单次聊天最多尝试的池出口数
+//（直连兜底不计入）：Cline 请求短平快，逐出口串行试太多次反而拖慢首字。
+const clineMaxExitAttempts = 3
+
+// clineExits 组装 Cline 聊天请求的出口序列。
+// 未启用节点池：nil——调用方单次直连（既有行为）。
+// 启用：按近期表现排序的池出口（截断少 > 快 > 未知，与 OpenCode 竞速
+// 同一套 exitTracker 记账）+ 直连兜底。出口上限 clineMaxExitAttempts。
+func (g *gateway) clineExits() []*url.URL {
+	if !g.cfg.poolEnabledFor(providerCline) {
+		return nil
+	}
+	ranked := g.raceExits()
+	if len(ranked) > clineMaxExitAttempts {
+		ranked = ranked[:clineMaxExitAttempts]
+	}
+	urls := make([]*url.URL, 0, len(ranked)+1)
+	for _, s := range ranked {
+		urls = append(urls, s.proxyURL)
+	}
+	urls = append(urls, nil) // 直连兜底：池出口全灭时保底交付
+	return urls
+}
+
+// clineChatClientFor 返回走指定出口的聊天客户端；proxyURL 为 nil 时直连。
+// 池出口复用全局共享 Transport 连接池（按出口缓存，与探活预热同池）。
+func (g *gateway) clineChatClientFor(proxyURL *url.URL) *http.Client {
+	if proxyURL == nil {
+		return clineChatClient
+	}
+	return &http.Client{Transport: sharedTransports.get(proxyURL)}
+}
+
+// clineNoteExit 把一次 Cline 出口尝试结果记入共享出口记账：走池的
+// 供应商与健康池同一本账，坏出口会被 OpenCode 竞速与 Cline 轮询共同避开。
+func (g *gateway) clineNoteExit(proxyURL *url.URL, elapsed time.Duration, ok bool) {
+	if proxyURL == nil {
+		return // 直连无出口可记账
+	}
+	addr := proxyURL.Host
+	if ok {
+		g.exits.observeSuccess(addr)
+		return
+	}
+	if g.punishExit(addr, "") {
+		g.exits.observeFail(addr)
+	}
+}
+
 // ── Credential / Token types ─────────────────────────────────────────────────
 
 type clineCredentials struct {
@@ -986,44 +1051,117 @@ func (g *gateway) handleClineChat(ctx context.Context, w http.ResponseWriter, pa
 	body := clineUpstreamBody(params, stream)
 	bodyJSON, _ := json.Marshal(body)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, clineAPIBase+"/chat/completions", bytes.NewReader(bodyJSON))
-	if err != nil {
-		return jsonGatewayResponse(http.StatusInternalServerError, err.Error()), nil
+	headers := http.Header{
+		"Authorization":     {"Bearer " + token},
+		"Content-Type":      {"application/json"},
+		"Accept":            {"text/event-stream"},
+		"HTTP-Referer":      {"https://cline.bot"},
+		"X-Title":           {"Cline"},
+		"User-Agent":        {"Cline/3.8.50"},
+		"X-CLIENT-TYPE":     {"opencode-autogate"},
+		"X-CLIENT-VERSION":  {"3.8.50"},
+		"X-PLATFORM":        {"win32"},
+		"X-PLATFORM-VERSION": {"10.0"},
+		"X-CORE-VERSION":    {"3.8.50"},
+		"X-IS-MULTIROOT":    {"false"},
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("HTTP-Referer", "https://cline.bot")
-	req.Header.Set("X-Title", "Cline")
-	req.Header.Set("User-Agent", "Cline/3.8.50")
-	req.Header.Set("X-CLIENT-TYPE", "opencode-autogate")
-	req.Header.Set("X-CLIENT-VERSION", "3.8.50")
-	req.Header.Set("X-PLATFORM", "win32")
-	req.Header.Set("X-PLATFORM-VERSION", "10.0")
-	req.Header.Set("X-CORE-VERSION", "3.8.50")
-	req.Header.Set("X-IS-MULTIROOT", "false")
 
-	log.Printf("[Cline] account=%s model=%s stream=%v", acc.Email, body["model"], stream)
+	log.Printf("[Cline]%s account=%s model=%s stream=%v", trace.tagString(), acc.Email, body["model"], stream)
 
-	resp, err := clineHTTPClient.Do(req)
-	if err != nil {
-		markClineAccountCooldown(acc, "network error: "+err.Error(), 5*time.Minute)
-		return jsonGatewayResponse(http.StatusBadGateway, err.Error()), nil
+	// 出口序列（providers.go）：节点池开启 → 表现排序的池出口 + 直连兜底；
+	// 关闭 → 仅直连（既有行为）。
+	exits := g.clineExits()
+	attemptDeadline := deadline
+	if stream && time.Until(attemptDeadline) < 10*time.Minute {
+		// 流式不该被网关总预算掐死：Cline 路径没有空闲看门狗，给 10 分钟
+		// 生成上限（旧实现被 Client.Timeout 钉死在 30 秒，长回复必断）。
+		attemptDeadline = time.Now().Add(10 * time.Minute)
+	}
+	attemptCtx, cancel := context.WithDeadline(ctx, attemptDeadline)
+	defer cancel()
+	buildReq := func() (*http.Request, error) {
+		r, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, clineUpstreamBase+"/chat/completions", bytes.NewReader(bodyJSON))
+		if err != nil {
+			return nil, err
+		}
+		r.Header = headers.Clone()
+		return r, nil
+	}
+
+	// 出口轮换：网络错误/上游 5xx 换下一出口；401/429 属账号级问题，
+	// 换出口救不了账号额度，交给下方既有处理。全部失败才交付错误。
+	var resp *http.Response
+	var lastClient *http.Client
+	var lastErr error
+	attempts := len(exits)
+	if attempts == 0 {
+		attempts = 1 // 未启用节点池：单次直连
+	}
+	for i := 0; i < attempts; i++ {
+		var exitURL *url.URL
+		exitName := "直连"
+		if i < len(exits) {
+			exitURL = exits[i]
+			if exitURL != nil {
+				exitName = exitURL.Host
+			}
+		}
+		attemptReq, err := buildReq()
+		if err != nil {
+			return jsonGatewayResponse(http.StatusInternalServerError, err.Error()), nil
+		}
+		client := g.clineChatClientFor(exitURL)
+		started := time.Now()
+		attemptResp, err := client.Do(attemptReq)
+		elapsed := time.Since(started)
+		if err != nil {
+			g.clineNoteExit(exitURL, elapsed, false)
+			lastErr = err
+			lastClient = client
+			log.Printf("[Cline]%s 出口 %s 网络错误，换下一出口: %v", trace.tagString(), exitName, err)
+			continue
+		}
+		if attemptResp.StatusCode >= 500 {
+			b, _ := io.ReadAll(attemptResp.Body)
+			attemptResp.Body.Close()
+			g.clineNoteExit(exitURL, elapsed, false)
+			lastErr = fmt.Errorf("Cline API %d: %s", attemptResp.StatusCode, truncateStr(string(b), 200))
+			log.Printf("[Cline]%s 出口 %s 上游 %d，换下一出口", trace.tagString(), exitName, attemptResp.StatusCode)
+			continue
+		}
+		g.clineNoteExit(exitURL, elapsed, true)
+		trace.finalProxy = exitName
+		resp = attemptResp
+		lastClient = client
+		break
+	}
+	if resp == nil {
+		// 网络级全灭：直连路径保持旧行为（账号冷却 5 分钟）；池路径的
+		// 失败已按出口记账，不冤枉账号。
+		if len(exits) == 0 {
+			markClineAccountCooldown(acc, "network error: "+fmt.Sprint(lastErr), 5*time.Minute)
+		}
+		return jsonGatewayResponse(http.StatusBadGateway, fmt.Sprint(lastErr)), nil
 	}
 	defer resp.Body.Close()
 
-	// 401 → 刷新 Token 重试
+	// 401 → 刷新 Token 重试（同一出口：401 是账号级问题，与出口无关）
 	if resp.StatusCode == http.StatusUnauthorized {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		log.Printf("[Cline] 401 from API: %s", truncateStr(string(respBody), 300))
 		if err := clineRefreshAccountToken(acc); err == nil {
 			token = acc.AccessToken
-			req.Header.Set("Authorization", "Bearer "+token)
-			resp, err = clineHTTPClient.Do(req)
+			retryReq, err := buildReq()
+			if err != nil {
+				return jsonGatewayResponse(http.StatusInternalServerError, err.Error()), nil
+			}
+			retryReq.Header.Set("Authorization", "Bearer "+token)
+			retryResp, err := lastClient.Do(retryReq)
 			if err != nil {
 				return jsonGatewayResponse(http.StatusBadGateway, err.Error()), nil
 			}
+			resp = retryResp
 			defer resp.Body.Close()
 			if resp.StatusCode == http.StatusUnauthorized {
 				retryBody, _ := io.ReadAll(resp.Body)

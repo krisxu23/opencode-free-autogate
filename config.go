@@ -63,6 +63,8 @@ type config struct {
 	echoDebug            bool          // 记录上游回传响应头（脱敏），回显出处守卫取证用
 	tlsInsecure          bool          // INSECURE_TLS=1：上游连接跳过证书校验（自签镜像/代理环境）
 	transportDialTimeout time.Duration // 共享连接池统一的拨号/TLS 握手超时（随首字节超时初始化）
+	opencodePoolOff      bool          // OpenCode 供应商禁用节点池出口（零值 false = 走池，测试/旧配置零回归）
+	clinePoolEnabled     bool          // Cline 供应商节点池出口开关（默认关：直连）
 }
 
 func loadConfig(project projectSpec) config {
@@ -127,6 +129,8 @@ func loadConfig(project projectSpec) config {
 		echoDebug:            envBool("PROXY_ECHO_DEBUG", false),
 		tlsInsecure:          tlsInsecure,
 		transportDialTimeout: firstByte,
+		opencodePoolOff:      !envDefaultOn("PROXY_POOL_OPENCODE"),
+		clinePoolEnabled:     envIsOn(os.Getenv("PROXY_POOL_CLINE")),
 	}
 	// 池的拨号参数在启动阶段一次性注入：键只依赖代理地址——探活即预热竞速连接。
 	sharedTransports.configure(firstByte, tlsInsecure)
