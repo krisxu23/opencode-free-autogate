@@ -70,10 +70,15 @@ type gatewayUI struct {
 	clineAccountEdit  *walk.TextEdit   // Cline 账号列表
 	opencodePoolCheck *walk.CheckBox   // OpenCode 供应商节点池出口开关
 	clinePoolCheck    *walk.CheckBox   // Cline 供应商节点池出口开关
-	regionEdit        *walk.LineEdit   // 地区偏好（US,JP,SG）
-	ipinfoEdit        *walk.LineEdit   // IPinfo token
-	abuseEdit         *walk.LineEdit   // AbuseIPDB key
-	dqsEdit           *walk.LineEdit   // Spamhaus DQS key
+	regionUS    *walk.CheckBox // 地区偏好组
+	regionJP    *walk.CheckBox
+	regionSG    *walk.CheckBox
+	regionKR    *walk.CheckBox
+	regionHK    *walk.CheckBox
+	regionTW    *walk.CheckBox
+	regionCN    *walk.CheckBox
+	regionEU    *walk.CheckBox
+	regionOTHER *walk.CheckBox
 	deepProbe         *walk.NumberEdit
 	probeConc         *walk.NumberEdit // 检测并发路数（初检/深检共用）
 	probeModelBox     *walk.ComboBox
@@ -137,7 +142,7 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 			},
 			dcl.TabWidget{
 				Font: uiFont,
-				Pages: []dcl.TabPage{
+Pages: []dcl.TabPage{
 					{
 						Title:  "运行状态",
 						Layout: dcl.VBox{Spacing: 8},
@@ -386,42 +391,33 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 										MinSize:  dcl.Size{Height: 96},
 									},
 								},
-							}, dcl.GroupBox{
-								Title:  "IP 信誉体检（可选，只体检正式池节点，缓存 7 天）",
+							},
+							dcl.GroupBox{
+								Title:  "IP 信誉体检（iprisk.top 聚合 16 源，零配置）",
 								Font:   uiFont,
 								Layout: dcl.VBox{Spacing: 6},
 								Children: []dcl.Widget{
-									dcl.Label{Text: "零配置可用：地区/ASN 走 ip-api→ipleak 双源自动兜底（均免 key），Spamhaus 免 key 尽力查询（被 resolver 拦截时自动跳过 24h）。可选增强：AbuseIPDB key（滥用举报）、IPinfo token（更高地理配额）、Spamhaus DQS key（免拦截）。信誉只影响出场顺序，绝不单独剔除节点；可疑节点可在浏览器人工核查 scamalytics.com/ip/{IP}。"},
+									dcl.Label{Text: "iprisk.top 聚合 16 个数据源给出 0-100 纯净度评分，零配置、无需注册任何 key；只体检正式池节点（转正时查一次 + 每日重查，缓存 7 天），失败自动退避。信誉只影响出场顺序，绝不单独剔除节点。"},
+									dcl.Label{Text: "地区偏好（勾选的地区优先出场，全不勾 = 不偏好）:"},
 									dcl.Composite{
 										Layout: dcl.HBox{MarginsZero: true},
 										Children: []dcl.Widget{
 											dcl.Label{Text: "地区偏好:"},
-											dcl.LineEdit{AssignTo: &ui.regionEdit, Text: settings.PreferredRegions, MinSize: dcl.Size{Width: 180}},
-											dcl.Label{Text: "逗号分隔国家码（如 US,JP,SG），留空不偏好；命中的出口优先出场"},
+											dcl.CheckBox{AssignTo: &ui.regionUS, Text: "美国"},
+											dcl.CheckBox{AssignTo: &ui.regionJP, Text: "日本"},
+											dcl.CheckBox{AssignTo: &ui.regionSG, Text: "新加坡"},
+											dcl.CheckBox{AssignTo: &ui.regionKR, Text: "韩国"},
+											dcl.CheckBox{AssignTo: &ui.regionHK, Text: "香港"},
 											dcl.HSpacer{},
 										},
 									},
 									dcl.Composite{
 										Layout: dcl.HBox{MarginsZero: true},
 										Children: []dcl.Widget{
-											dcl.Label{Text: "IPinfo Token:"},
-											dcl.LineEdit{AssignTo: &ui.ipinfoEdit, Text: settings.IpinfoToken, MinSize: dcl.Size{Width: 260}},
-											dcl.HSpacer{},
-										},
-									},
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
-										Children: []dcl.Widget{
-											dcl.Label{Text: "AbuseIPDB Key:"},
-											dcl.LineEdit{AssignTo: &ui.abuseEdit, Text: settings.AbuseIPDBKey, MinSize: dcl.Size{Width: 260}},
-											dcl.HSpacer{},
-										},
-									},
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
-										Children: []dcl.Widget{
-											dcl.Label{Text: "Spamhaus DQS Key:"},
-											dcl.LineEdit{AssignTo: &ui.dqsEdit, Text: settings.SpamhausDQSKey, MinSize: dcl.Size{Width: 260}},
+																						dcl.CheckBox{AssignTo: &ui.regionTW, Text: "台湾"},
+											dcl.CheckBox{AssignTo: &ui.regionCN, Text: "大陆"},
+											dcl.CheckBox{AssignTo: &ui.regionEU, Text: "欧盟"},
+											dcl.CheckBox{AssignTo: &ui.regionOTHER, Text: "其他"},
 											dcl.HSpacer{},
 										},
 									},
@@ -446,15 +442,15 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 									},
 								},
 							},
-							dcl.Composite{
-								Layout: dcl.HBox{MarginsZero: true},
-								Children: []dcl.Widget{
-									dcl.PushButton{Text: "保存并重启", Font: uiFont, OnClicked: ui.onSave},
-									dcl.PushButton{Text: "仅检查格式", Font: uiFont, OnClicked: ui.onValidate},
-									dcl.PushButton{Text: "打开配置目录", Font: uiFont, OnClicked: ui.onOpenFolder},
-									dcl.HSpacer{},
-								},
-							},
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.PushButton{Text: "保存并重启", Font: uiFont, OnClicked: ui.onSave},
+											dcl.PushButton{Text: "仅检查格式", Font: uiFont, OnClicked: ui.onValidate},
+											dcl.PushButton{Text: "打开配置目录", Font: uiFont, OnClicked: ui.onOpenFolder},
+											dcl.HSpacer{},
+										},
+									},
 						},
 					},
 
@@ -879,10 +875,20 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 	next.RaceWidth = int(ui.raceWidth.Value())
 	next.OpenCodePoolOff = !ui.opencodePoolCheck.Checked()
 	next.ClinePoolEnabled = ui.clinePoolCheck.Checked()
-	next.PreferredRegions = strings.TrimSpace(ui.regionEdit.Text())
-	next.IpinfoToken = strings.TrimSpace(ui.ipinfoEdit.Text())
-	next.AbuseIPDBKey = strings.TrimSpace(ui.abuseEdit.Text())
-	next.SpamhausDQSKey = strings.TrimSpace(ui.dqsEdit.Text())
+	var groups []string
+	for _, g := range []struct {
+		on  func() bool
+		tok string
+	}{
+		{ui.regionUS.Checked, "US"}, {ui.regionJP.Checked, "JP"}, {ui.regionSG.Checked, "SG"},
+		{ui.regionKR.Checked, "KR"}, {ui.regionHK.Checked, "HK"}, {ui.regionTW.Checked, "TW"},
+		{ui.regionCN.Checked, "CN"}, {ui.regionEU.Checked, "EU"}, {ui.regionOTHER.Checked, "OTHER"},
+	} {
+		if g.on() {
+			groups = append(groups, g.tok)
+		}
+	}
+	next.PreferredRegions = strings.Join(groups, ",")
 
 	proxies, proxyErrors := ParseProxyInput(next.ProxyInput)
 	mirrors, mirrorErrors := parseMirrorList(next.MirrorInput)
@@ -910,17 +916,7 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 	} else {
 		report.WriteString("并行竞速：关闭\r\n")
 	}
-	repSources := 0
-	if next.AbuseIPDBKey != "" {
-		repSources++
-	}
-	if next.IpinfoToken != "" {
-		repSources++
-	}
-	if next.SpamhausDQSKey != "" {
-		repSources++
-	}
-	fmt.Fprintf(&report, "IP 信誉体检：%d 个数据源已配置（正式池节点，缓存 7 天）", repSources)
+	report.WriteString("IP 信誉体检：iprisk.top 聚合 16 源（零配置，正式池节点，缓存 7 天）")
 	if next.PreferredRegions != "" {
 		fmt.Fprintf(&report, "，地区偏好：%s", next.PreferredRegions)
 	}

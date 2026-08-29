@@ -230,9 +230,12 @@ func newGateway(cfg config) *gateway {
 	usageObserver = func(model string, prompt, completion, cached int64) {
 		g.usage.Observe(model, prompt, completion, cached)
 	}
-	g.iprep = newIPReputer(cfg, func(addr string, res *ipRepResult) {
+	g.iprep = newIPReputer(func(addr string, res *ipRepResult) {
 		g.exits.observeRep(addr, res)
 	})
+	g.iprep.refresh = func() []string {
+		return append(g.slotAddresses(true), g.slotAddresses(false)...)
+	}
 	return g
 }
 

@@ -50,3 +50,49 @@ func (c config) preferredRegionSet() map[string]struct{} {
 	}
 	return set
 }
+
+// 地区分组：GUI 勾选框与偏好令牌只暴露这几个大区，不必记国家码。
+// EU 取欧盟 27 国；OTHER 命中所有未在分组里列出的已知国家码。
+var regionGroups = map[string][]string{
+	"US": {"US"},
+	"JP": {"JP"},
+	"SG": {"SG"},
+	"KR": {"KR"},
+	"HK": {"HK"},
+	"TW": {"TW"},
+	"CN": {"CN"},
+	"EU": {"AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+		"DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+		"PL", "PT", "RO", "SK", "SI", "ES", "SE"},
+}
+
+const regionOther = "OTHER"
+
+// expandRegionGroups 把选中的地区令牌展开成国家码集合。
+// 返回集合与"是否选中其他地区"。
+func expandRegionGroups(tokens map[string]struct{}) (map[string]struct{}, bool) {
+	codes := make(map[string]struct{})
+	other := false
+	for tok := range tokens {
+		if tok == regionOther {
+			other = true
+			continue
+		}
+		for _, c := range regionGroups[tok] {
+			codes[c] = struct{}{}
+		}
+	}
+	return codes, other
+}
+
+// knownRegion 报告国家码是否属于任何已定义分组（供 OTHER 判定）。
+func knownRegion(cc string) bool {
+	for _, codes := range regionGroups {
+		for _, c := range codes {
+			if c == cc {
+				return true
+			}
+		}
+	}
+	return false
+}

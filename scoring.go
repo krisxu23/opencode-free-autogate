@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
@@ -143,11 +142,11 @@ func (t *exitTracker) observeRep(addr string, res *ipRepResult) {
 // 不因没体检而吃亏也不占优。
 func (s *exitStat) repTier() int {
 	switch {
-	case s.repScore >= 80:
+	case s.repScore >= 85:
 		return 0
-	case s.repScore >= 55, s.repScore < 0:
+	case s.repScore >= 70, s.repScore < 0:
 		return 1
-	case s.repScore >= 35:
+	case s.repScore >= 55:
 		return 2
 	default:
 		return 3
@@ -161,9 +160,14 @@ func (s *exitStat) regionTier(preferred map[string]struct{}) int {
 		return 0
 	}
 	if s.region == "" {
-		return 1
+		return 1 // 未知地区居中
 	}
-	if _, ok := preferred[strings.ToUpper(s.region)]; ok {
+	codes, other := expandRegionGroups(preferred)
+	if _, ok := codes[s.region]; ok {
+		return 0
+	}
+	// 勾了"其他"：不属于任何已定义大区的国家也算命中
+	if other && !knownRegion(s.region) {
 		return 0
 	}
 	return 2

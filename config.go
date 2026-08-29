@@ -66,9 +66,6 @@ type config struct {
 	opencodePoolOff      bool          // OpenCode 供应商禁用节点池出口（零值 false = 走池，测试/旧配置零回归）
 	clinePoolEnabled     bool          // Cline 供应商节点池出口开关（默认关：直连）
 	preferredRegions     string        // 地区偏好（逗号分隔国家码 US,JP,SG；空 = 不偏好）
-	ipinfoToken          string        // IPinfo token（可选）：地区/ASN 体检
-	abuseIPDBKey         string        // AbuseIPDB key（可选）：滥用举报体检
-	spamhausDQSKey       string        // Spamhaus DQS key（可选）：黑名单体检
 }
 
 func loadConfig(project projectSpec) config {
@@ -136,9 +133,6 @@ func loadConfig(project projectSpec) config {
 		opencodePoolOff:      !envDefaultOn("PROXY_POOL_OPENCODE"),
 		clinePoolEnabled:     envIsOn(os.Getenv("PROXY_POOL_CLINE")),
 		preferredRegions:     envString("PROXY_PREFERRED_REGIONS", ""),
-		ipinfoToken:          os.Getenv("IPINFO_TOKEN"),
-		abuseIPDBKey:         os.Getenv("ABUSEIPDB_KEY"),
-		spamhausDQSKey:       os.Getenv("SPAMHAUS_DQS_KEY"),
 	}
 	// 池的拨号参数在启动阶段一次性注入：键只依赖代理地址——探活即预热竞速连接。
 	sharedTransports.configure(firstByte, tlsInsecure)

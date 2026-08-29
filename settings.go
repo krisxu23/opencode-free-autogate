@@ -36,9 +36,6 @@ var configManagedEnvKeys = []string{
 	"PROXY_POOL_OPENCODE",
 	"PROXY_POOL_CLINE",
 	"PROXY_PREFERRED_REGIONS",
-	"IPINFO_TOKEN",
-	"ABUSEIPDB_KEY",
-	"SPAMHAUS_DQS_KEY",
 	"GATEWAY_KEY",
 }
 
@@ -68,9 +65,6 @@ type uiSettings struct {
 	OpenCodePoolOff bool `json:"opencode_pool_off"`
 	ClinePoolEnabled bool `json:"cline_pool_enabled"`
 	PreferredRegions string `json:"preferred_regions"` // 地区偏好（逗号分隔国家码，空 = 不偏好）
-	IpinfoToken      string `json:"ipinfo_token"`      // IP 信誉体检凭据（均可选，缺省跳过该源）
-	AbuseIPDBKey     string `json:"abuseipdb_key"`
-	SpamhausDQSKey   string `json:"spamhaus_dqs_key"`
 }
 
 // 节点池默认源已移除：新装用户节点池为空，公共推荐源见 README。
@@ -244,15 +238,6 @@ func (s uiSettings) applyEnv() {
 	}
 	if s.PreferredRegions != "" {
 		setIfEmpty("PROXY_PREFERRED_REGIONS", s.PreferredRegions)
-	}
-	if s.IpinfoToken != "" {
-		setIfEmpty("IPINFO_TOKEN", s.IpinfoToken)
-	}
-	if s.AbuseIPDBKey != "" {
-		setIfEmpty("ABUSEIPDB_KEY", s.AbuseIPDBKey)
-	}
-	if s.SpamhausDQSKey != "" {
-		setIfEmpty("SPAMHAUS_DQS_KEY", s.SpamhausDQSKey)
 	}
 	setIfEmpty("GATEWAY_KEY", s.GatewayKey)
 }
