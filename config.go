@@ -46,6 +46,7 @@ type config struct {
 	refreshInterval      time.Duration
 	probeRoundGap        time.Duration // 两轮初检之间的最小间隔：公益源按分钟级更新，抓太勤只会招限流
 	streamIdle           time.Duration
+	streamKeepalive      time.Duration // 流内保活间隔：上游静默多久注入一次协议事件（0=关）
 	stallWindow          time.Duration // 慢流看门狗窗口：窗口内字节多于 0 但低于阈值判卡死
 	stallMinBytes        int           // 慢流看门狗窗口内的最小字节数（0 关闭看门狗）
 	streamResume         bool          // 中流续写：透传流中断时用已发文本作 prefill 补尾（仅 chat 形态）
@@ -113,6 +114,7 @@ func loadConfig(project projectSpec) config {
 		refreshInterval:      envMilliseconds("PROXY_REFRESH_MS", 300000),
 		probeRoundGap:        envMilliseconds("PROXY_PROBE_ROUND_GAP_MS", 60000),
 		streamIdle:           envMilliseconds("STREAM_IDLE_TIMEOUT", 300000),
+		streamKeepalive:      envMilliseconds("PROXY_STREAM_KEEPALIVE", 60000),
 		stallWindow:          envMilliseconds("PROXY_STALL_WINDOW", 60000),
 		stallMinBytes:        envInt("PROXY_STALL_MIN_BYTES", 64),
 		streamResume:         envDefaultOn("PROXY_STREAM_RESUME"),

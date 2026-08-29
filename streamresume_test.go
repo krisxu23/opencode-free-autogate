@@ -135,7 +135,7 @@ func TestStreamResumeEndToEnd(t *testing.T) {
 	if !strings.Contains(body, "ld!") {
 		t.Fatalf("应包含续写补尾: %q", body)
 	}
-	if !strings.Contains(body, `"finish_reason":"stop"`) || !strings.Contains(body, "[DONE]") {
+	if !strings.Contains(body, "\"finish_reason\":\"stop\"") || !strings.Contains(body, "[DONE]") {
 		t.Fatalf("续写后应有终止标记: %q", body)
 	}
 	if calls.Load() != 2 {
@@ -155,6 +155,61 @@ func TestStreamResumeEndToEnd(t *testing.T) {
 	}
 	if content, _ := prefill["content"].(string); content != "Hello wor" {
 		t.Fatalf("prefill 内容应为已发文本: %v", prefill)
+	}
+}
+
+// 慢流看门狗：单窗口违规后恢复流量——不应掐断（首句流得慢的合法流）。
+func TestStallWatchdogSparesRecoveringStream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"go\"}}]}\n\n"))
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+		// 第一窗口：涓流（违规 1）
+		for i := 0; i < 8; i++ {
+			time.Sleep(40 * time.Millisecond)
+			_, _ = w.Write([]byte("x"))
+			flusher.Flush()
+		}
+		// 恢复：正常速度补足健康窗口的字节量
+		for i := 0; i < 10; i++ {
+			time.Sleep(20 * time.Millisecond)
+			_, _ = w.Write([]byte("0123456789012345678901234567890123456789"))
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+		flusher.Flush()
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer upstream.Close()
+
+	cfg := config{
+		project:          projectSpec{upstream: upstream.URL, directFallback: true},
+		proxyMode:        "custom",
+		firstByteTimeout: 5 * time.Second,
+		hardTimeout:      30 * time.Second,
+		nonStreamTimeout: 30 * time.Second,
+		streamIdle:       30 * time.Second,
+		stallWindow:      300 * time.Millisecond,
+		stallMinBytes:    64,
+	}
+	application := &app{gateway: newGateway(cfg)}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	trace := newRequestTrace()
+	recorder := httptest.NewRecorder()
+
+	response, guard, err := application.handlePost(recorder, request, "/v1/chat/completions", trace.start.Add(cfg.hardTimeout), trace)
+	if err != nil {
+		t.Fatalf("handlePost: %v", err)
+	}
+	application.finish(recorder, request, trace, response, nil, guard)
+	body := recorder.Body.String()
+	if !strings.Contains(body, "[DONE]") {
+		t.Fatalf("恢复流不应被看门狗掐断: %q", body)
+	}
+	if !strings.Contains(body, "go") {
+		t.Fatalf("首段数据应已透传: %q", body)
 	}
 }
 
@@ -230,18 +285,17 @@ func TestGarbageContentTypeRetriedOnNextExit(t *testing.T) {
 	}))
 	defer sse.Close()
 
+	// HTML 端点伪装成一个自定义出口节点：第一个出口返回 HTML 垃圾，
+	// 直连兜底（真正的 SSE 端点）交付完整流。
+	htmlURL := strings.TrimPrefix(html.URL, "http://")
 	cfg := config{
 		project:          projectSpec{upstream: sse.URL, directFallback: true},
 		proxyMode:        "custom",
-		customProxies:    "REPLACED-BELOW",
+		customProxies:    htmlURL,
 		firstByteTimeout: 5 * time.Second,
 		hardTimeout:      30 * time.Second,
 		nonStreamTimeout: 30 * time.Second,
 	}
-	// HTML 端点伪装成一个自定义出口节点：第一个出口返回 HTML 垃圾，
-	// 直连兜底（真正的 SSE 端点）交付完整流。
-	htmlURL := strings.TrimPrefix(html.URL, "http://")
-	cfg.customProxies = htmlURL
 	application := &app{gateway: newGateway(cfg)}
 	application.gateway.markManual(htmlURL)
 	slot, err := slotFromRawURL("http://" + htmlURL)

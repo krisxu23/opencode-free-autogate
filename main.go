@@ -585,6 +585,20 @@ func heartbeatPayload(path string) string {
 	}
 }
 
+// midStreamKeepalive 流内保活事件：与守卫心跳同协议形态，但 chat 形态
+// 刻意不带 id/model——流中途出现不同 id 会被部分客户端当作新消息；
+// 不带内容——注入文本会累积进最终回答（内容污染）。
+func midStreamKeepalive(path string) string {
+	switch {
+	case strings.HasSuffix(path, "/v1/responses"):
+		return `data: {"type":"response.in_progress"}` + "\n\n"
+	case strings.HasSuffix(path, "/v1/messages"):
+		return "event: ping\ndata: {\"type\":\"ping\"}\n\n"
+	default:
+		return `data: {"choices":[{"index":0,"delta":{}}]}` + "\n\n"
+	}
+}
+
 func (g *sseGuard) beatLocked() {
 	_, _ = io.WriteString(g.w, heartbeatPayload(g.path))
 	if flusher, ok := g.w.(http.Flusher); ok {
@@ -622,6 +636,8 @@ type streamOptions struct {
 	hyg           *sseSanitizer
 	resumer       *streamResumer // 中流续写；nil 表示不支持续写的形态
 	usage         *usageSnapshot // 每请求 token 用量快照，streamResponse 回填
+	path          string         // 客户端协议路径（/v1/responses 等）：决定保活事件形态
+	keepalive     time.Duration  // 流内保活间隔：上游静默多久注入一次（0=关）
 }
 
 // writeCommittedStream 处理已提前提交 SSE 头的响应：赢家的流直接透传；
@@ -1067,10 +1083,12 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 	defer timer.Stop()
 	// 慢流看门狗状态：只抓"还在滴但基本卡死"的流（窗口内字节多于 0 但
 	// 低于阈值）。完全静默的流交给空闲超时——思考模型合法的长停顿跨窗
-	// 时清账重启，不会误杀。
+	// 时清账重启，不会误杀。判定需要连续两个违规窗口：单窗口慢（首句
+	// 流得慢/上游短暂抖动）只警告不掐，避免误杀正常慢流。
 	var windowStart time.Time
 	var windowBytes int
 	var lastRead time.Time
+	stallViolations := 0
 	stallKill := func(n int) (bool, int) {
 		if opts.stallWindow <= 0 || opts.stallMinBytes <= 0 || n <= 0 {
 			return false, 0
@@ -1092,7 +1110,17 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 		observed := windowBytes
 		windowStart = now
 		windowBytes = 0
-		return dribble, observed
+		if !dribble {
+			stallViolations = 0
+			return false, observed
+		}
+		stallViolations++
+		if stallViolations < 2 {
+			log.Printf("[流] 慢流（连续第 %d 个低流量窗口，仅 %d 字节）——继续观察", stallViolations, observed)
+			return false, observed
+		}
+		stallViolations = 0
+		return true, observed
 	}
 	for {
 		timer.Reset(opts.idle)
@@ -1100,7 +1128,7 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 		stopped := timer.Stop()
 		if n > 0 {
 			if dribble, observed := stallKill(n); dribble {
-				log.Printf("[流] 慢流看门狗：%s 窗口内仅 %d 字节，判定僵尸流关闭", opts.stallWindow, observed)
+				log.Printf("[流] 慢流看门狗：连续 %d 个低流量窗口（%s 内仅 %d 字节），判定僵尸流关闭", stallViolations+1, opts.stallWindow, observed)
 				live.cancel()
 				finish()
 				return
