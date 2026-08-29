@@ -70,15 +70,15 @@ type gatewayUI struct {
 	clineAccountEdit  *walk.TextEdit   // Cline 账号列表
 	opencodePoolCheck *walk.CheckBox   // OpenCode 供应商节点池出口开关
 	clinePoolCheck    *walk.CheckBox   // Cline 供应商节点池出口开关
-	regionUS    *walk.CheckBox // 地区偏好组
-	regionJP    *walk.CheckBox
-	regionSG    *walk.CheckBox
-	regionKR    *walk.CheckBox
-	regionHK    *walk.CheckBox
-	regionTW    *walk.CheckBox
-	regionCN    *walk.CheckBox
-	regionEU    *walk.CheckBox
-	regionOTHER *walk.CheckBox
+	regionUS          *walk.CheckBox   // 地区偏好组
+	regionJP          *walk.CheckBox
+	regionSG          *walk.CheckBox
+	regionKR          *walk.CheckBox
+	regionHK          *walk.CheckBox
+	regionTW          *walk.CheckBox
+	regionCN          *walk.CheckBox
+	regionEU          *walk.CheckBox
+	regionOTHER       *walk.CheckBox
 	deepProbe         *walk.NumberEdit
 	probeConc         *walk.NumberEdit // 检测并发路数（初检/深检共用）
 	probeModelBox     *walk.ComboBox
@@ -142,7 +142,7 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 			},
 			dcl.TabWidget{
 				Font: uiFont,
-Pages: []dcl.TabPage{
+				Pages: []dcl.TabPage{
 					{
 						Title:  "运行状态",
 						Layout: dcl.VBox{Spacing: 8},
@@ -400,9 +400,8 @@ Pages: []dcl.TabPage{
 									dcl.Label{Text: "iprisk.top 聚合 16 个数据源给出 0-100 纯净度评分，零配置、无需注册任何 key；只体检正式池节点（转正时查一次 + 每日重查，缓存 7 天），失败自动退避。信誉只影响出场顺序，绝不单独剔除节点。"},
 									dcl.Label{Text: "地区偏好（勾选的地区优先出场，全不勾 = 不偏好）:"},
 									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
+										Layout: dcl.HBox{Spacing: 2, MarginsZero: true},
 										Children: []dcl.Widget{
-											dcl.Label{Text: "地区偏好:"},
 											dcl.CheckBox{AssignTo: &ui.regionUS, Text: "美国"},
 											dcl.CheckBox{AssignTo: &ui.regionJP, Text: "日本"},
 											dcl.CheckBox{AssignTo: &ui.regionSG, Text: "新加坡"},
@@ -412,9 +411,9 @@ Pages: []dcl.TabPage{
 										},
 									},
 									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
+										Layout: dcl.HBox{Spacing: 2, MarginsZero: true},
 										Children: []dcl.Widget{
-																						dcl.CheckBox{AssignTo: &ui.regionTW, Text: "台湾"},
+											dcl.CheckBox{AssignTo: &ui.regionTW, Text: "台湾"},
 											dcl.CheckBox{AssignTo: &ui.regionCN, Text: "大陆"},
 											dcl.CheckBox{AssignTo: &ui.regionEU, Text: "欧盟"},
 											dcl.CheckBox{AssignTo: &ui.regionOTHER, Text: "其他"},
@@ -442,15 +441,15 @@ Pages: []dcl.TabPage{
 									},
 								},
 							},
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
-										Children: []dcl.Widget{
-											dcl.PushButton{Text: "保存并重启", Font: uiFont, OnClicked: ui.onSave},
-											dcl.PushButton{Text: "仅检查格式", Font: uiFont, OnClicked: ui.onValidate},
-											dcl.PushButton{Text: "打开配置目录", Font: uiFont, OnClicked: ui.onOpenFolder},
-											dcl.HSpacer{},
-										},
-									},
+							dcl.Composite{
+								Layout: dcl.HBox{MarginsZero: true},
+								Children: []dcl.Widget{
+									dcl.PushButton{Text: "保存并重启", Font: uiFont, OnClicked: ui.onSave},
+									dcl.PushButton{Text: "仅检查格式", Font: uiFont, OnClicked: ui.onValidate},
+									dcl.PushButton{Text: "打开配置目录", Font: uiFont, OnClicked: ui.onOpenFolder},
+									dcl.HSpacer{},
+								},
+							},
 						},
 					},
 
