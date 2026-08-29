@@ -1664,15 +1664,14 @@ func (g *gateway) raceExits() []slot {
 			auto = append(auto, s)
 		}
 	}
-	width := g.cfg.raceWidth
-	if width < 2 {
-		width = 2
-	}
-	exits := make([]slot, 0, len(manual)+width)
+	// 返回全部排序后的正式池出口（不截断到 raceWidth）——竞速按波次
+	// 消费这份清单：每波 raceWidth 路，本波全部未交付才追加下一波，
+	// 直到正式池耗尽才交出兜底（波次模型）。
+	exits := make([]slot, 0, len(manual)+len(auto))
 	exits = append(exits, manual...)
 	if len(auto) > 0 {
 		start := int(g.rr.Add(1)-1) % len(auto)
-		for i := 0; i < len(auto) && len(exits) < width+len(manual); i++ {
+		for i := 0; i < len(auto); i++ {
 			exits = append(exits, auto[(start+i)%len(auto)])
 		}
 	}
@@ -1828,7 +1827,16 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 	// 失败则照常按对冲阶梯升级，不影响可用性。
 	// 首批全发：用户设了 raceWidth 就全部并发出发，不再分批等待。
 	// 粘性模式例外：只发粘性出口一路，快速命中缓存；失败再按对冲阶梯升级。
-	firstWave := len(exits)
+	// 波次模型：每波 raceWidth 路；本波全部结算且未交付时追加下一波，
+	// 直到正式池耗尽才交出可重试兜底（请求总预算仍然封顶）。
+	firstWave := g.cfg.raceWidth
+	if firstWave > len(exits) {
+		firstWave = len(exits)
+	}
+	if firstWave < 1 {
+		firstWave = 1
+	}
+	sticky := false
 	if g.cfg.stickyEnabled {
 		if addr, ok := g.stickyLookup(request.session); ok && !g.exits.recentlyTruncated(addr, stickyTruncSkip) {
 			for i := range exits {
@@ -1837,6 +1845,8 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 					exits = append(exits[:i], exits[i+1:]...)
 					exits = append([]slot{pinned}, exits...)
 					firstWave = 1
+					sticky = true
+					sticky = true
 					log.Printf("[粘性]%s %s 钉住 %s（首批单发，吃上游提示缓存）", trace.tagString(), request.session, addr)
 					break
 				}
@@ -1849,13 +1859,26 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 		launch(directAddr, true, nil)
 		directLaunched = true
 	}
-	armHedge()
-	log.Printf("[竞速]%s 对冲竞速：%d 个出口待发，已发 %d 路（含直连）", trace.tagString(), len(exits), launchedCount())
+	if sticky {
+		armHedge() // 粘性单发失败时按 hedgeBatch 渐进加发
+	}
+	log.Printf("[竞速]%s 波次竞速：%d 个出口待发（每波 %d 路），已发 %d 路（含直连）", trace.tagString(), len(exits), g.cfg.raceWidth, launchedCount())
 
 	var last *gatewayResponse
 	var lastAddr string
 	var lastUpstream string
 	received := 0
+	wave := 1
+	// 波次推进：本波全部结算（含直连）且正式池还有未出场出口时，
+	// 追加下一波 raceWidth 路——耗尽正式池才交出兜底。
+	advanceIfSettled := func() {
+		if received >= launchedCount() && launchedExits < len(exits) && ctx.Err() == nil {
+			launchWave(g.cfg.raceWidth)
+			wave++
+			log.Printf("[竞速] 第 %d 波 %d 路全部未交付，追加下一波（已用 %d/%d 出口）",
+				wave-1, g.cfg.raceWidth, launchedExits, len(exits))
+		}
+	}
 	for received < launchedCount() || hedgeCh != nil {
 		select {
 		case res := <-results:
@@ -1877,6 +1900,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 						g.exits.observeFail(res.addr)
 					}
 				}
+				advanceIfSettled()
 				continue
 			}
 			if retryableStatus(res.resp.status) {
@@ -1896,6 +1920,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 				} else {
 					res.resp.live.Close()
 				}
+				advanceIfSettled()
 				continue
 			}
 			// 赢家出现（已通过首数据块验证）：取消在途输家，停止加发；
@@ -1948,8 +1973,8 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 		}
 	}
 	if last != nil {
-		log.Printf("[竞速]%s 本轮 %d 个出口均未交付可用响应，交出可重试兜底: %s（正式池 %d 个仍在册）", trace.tagString(),
-			launchedCount(), lastAddr, g.customCount())
+		log.Printf("[竞速]%s 全部 %d 路已尝试（%d 波，正式池耗尽），交出可重试兜底: %s", trace.tagString(),
+			launchedCount(), wave, lastAddr)
 		trace.finalProxy = lastAddr
 		trace.upstream = shortUpstream(lastUpstream)
 		trace.winnerUpstream = lastUpstream

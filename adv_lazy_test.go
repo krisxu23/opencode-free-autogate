@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -74,5 +78,61 @@ func TestAdvEvictAddr(t *testing.T) {
 	}
 	if _, ok := g.advCooldown[linkAuto]; !ok {
 		t.Fatal("淘汰的链接应进入冷却")
+	}
+}
+
+// 波次耗尽：正式池 3 节点、竞速宽 2 路——第一波 2 个全部 503 后，
+// 自动追加第二波（第 3 个节点），全部耗尽才交出可重试兜底（503）。
+func TestRaceWaveExhaustion(t *testing.T) {
+	var hits [3]int
+	proxies := make([]*httptest.Server, 3)
+	for i := range proxies {
+		i := i
+		proxies[i] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits[i]++
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer proxies[i].Close()
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := config{
+		project:          projectSpec{upstream: upstream.URL, directFallback: false},
+		proxyMode:        "custom",
+		raceEnabled:      true,
+		raceWidth:        2,
+		stickyEnabled:    false,
+		firstByteTimeout: 5 * time.Second,
+		hardTimeout:      30 * time.Second,
+		nonStreamTimeout: 30 * time.Second,
+	}
+	g := newGateway(cfg)
+	for _, p := range proxies {
+		addr := strings.TrimPrefix(p.URL, "http://")
+		slot, err := slotFromRawURL(addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.addSlot(slot, true)
+	}
+
+	trace := newRequestTrace()
+	request := upstreamRequest{
+		method: http.MethodPost, path: "/v1/chat/completions", nonStream: true,
+		body: []byte(`{}`), deadline: time.Now().Add(30 * time.Second),
+	}
+	resp, err := g.dispatchRace(context.Background(), request, trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.status != http.StatusServiceUnavailable {
+		t.Fatalf("全池耗尽后应交出可重试兜底 503，得到 %d", resp.status)
+	}
+	total := hits[0] + hits[1] + hits[2]
+	if total != 3 {
+		t.Fatalf("三个节点都应被尝试一次，实际 %d 次", total)
 	}
 }
