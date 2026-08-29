@@ -162,8 +162,10 @@ func TestRaceExitsManualAlwaysIncluded(t *testing.T) {
 			autoCount++
 		}
 	}
-	if autoCount > 2 {
-		t.Fatalf("自动节点应受宽度限制（≤%d），实际 %d", cfg.raceWidth, autoCount)
+	// 波次模型：raceExits 返回全部排序后的正式池出口（不截断到
+	// raceWidth）——每波 raceWidth 路由 dispatchRace 分波出场。
+	if autoCount != 4 {
+		t.Fatalf("波次模型下自动节点应全部返回，实际 %d", autoCount)
 	}
 }
 
