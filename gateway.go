@@ -59,6 +59,7 @@ type requestTrace struct {
 	upstream       string
 	winnerUpstream string         // 竞速赢家实际使用的上游基址（完整 URL），供镜像记账
 	tag            string         // 日志关联标签（会话短标识）：并发请求/竞速尝试靠它归属
+	triedExits     map[string]struct{} // 本请求已尝试过的出口（跨波次/镜像/吸收去重）
 	model          string         // 请求模型（收尾行展示）
 	firstByte      time.Duration  // 响应头到达耗时；未知为 0（收尾行展示）
 	usage          *usageSnapshot // 每请求 token 用量（收尾行展示）
@@ -70,6 +71,21 @@ type usageSnapshot struct {
 	prompt     int64
 	completion int64
 	cached     int64
+}
+
+// markTried 记录"该出口本请求已尝试过"。同一出口跨波次/镜像/吸收
+// 尝试只出场一次——上游故障窗口中避免对同一批出口反复轰炸
+// （曾实测一个请求打出 1269 次上游请求的重试风暴）。
+func (t *requestTrace) markTried(addr string) {
+	if t.triedExits == nil {
+		t.triedExits = make(map[string]struct{})
+	}
+	t.triedExits[addr] = struct{}{}
+}
+
+func (t *requestTrace) triedBefore(addr string) bool {
+	_, ok := t.triedExits[addr]
+	return ok
 }
 
 // tagString 返回带前导空格的日志标签；无标签时返回空串，调用方直接
@@ -1697,6 +1713,18 @@ const stickyTruncSkip = 5 * time.Minute
 // 输家并停止加发；每路出口独立 context，取消输家不影响赢家的流。
 func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, trace *requestTrace) (*gatewayResponse, error) {
 	exits := g.raceExits()
+	// 本请求已尝试过的出口不再出场（跨波次/镜像/吸收尝试去重）——
+	// 上游故障窗口中避免对同一批出口反复轰炸（曾一轮 1269 次重试）。
+	fresh := exits[:0]
+	for _, s := range exits {
+		if !trace.triedBefore(s.addr) {
+			fresh = append(fresh, s)
+		}
+	}
+	exits = fresh
+	if len(exits) == 0 && trace.triedBefore("直连") {
+		return nil, errAllExitsFailed // 本请求已尝试过全部正式池出口与直连
+	}
 
 	// 镜像分散：出口轮流指到主上游与各镜像，一笔请求同时探多个镜像的
 	// 队列，避免整个竞速被单一镜像的慢速拖死。起点跟随 dispatch 已轮换
@@ -1790,6 +1818,7 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 				continue
 			}
 			trace.addAttempt(candidate.addr)
+			trace.markTried(candidate.addr)
 			launch(candidate.addr, false, candidate.proxyURL)
 			launchedExits++
 			count--
@@ -1854,7 +1883,8 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 		}
 	}
 	launchWave(firstWave)
-	if g.cfg.project.directFallback {
+	if g.cfg.project.directFallback && !trace.triedBefore(directAddr) {
+		trace.markTried(directAddr)
 		trace.addAttempt(directAddr)
 		launch(directAddr, true, nil)
 		directLaunched = true

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -77,6 +78,7 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 			log.Printf("[吸收]%s 总预算将尽，停止于第 %d/%d 次尝试", trace.tagString(), attempt-1, maxAttempts)
 			break
 		}
+		triedBefore := len(trace.triedExits)
 		attemptCtx, cancel := context.WithDeadline(ctx, overall)
 		resp, err := dispatch(attemptCtx, request, trace)
 		if err != nil {
@@ -84,9 +86,24 @@ func (g *gateway) dispatchAbsorbWith(ctx context.Context, request upstreamReques
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
+			// 本轮没有试到任何新出口（全部已在本请求内尝试过）：上游
+			// 在请求预算内不会恢复，提前收场，不再空转剩余重试次数。
+			if errors.Is(err, errAllExitsFailed) && len(trace.triedExits) == triedBefore {
+				log.Printf("[吸收]%s 全部出口已在本请求内尝试过，提前结束重试", trace.tagString())
+				break
+			}
 			log.Printf("[吸收]%s 第 %d/%d 次未取得响应: %v", trace.tagString(), attempt, maxAttempts, err)
 			pauseAbsorb(attempt)
 			continue
+		}
+		// 有响应但可重试：也要确认试到了新出口，否则同样提前收场。
+		if resp.live == nil && resp.status != http.StatusOK && len(trace.triedExits) == triedBefore && attempt > 1 {
+			cancel()
+			log.Printf("[吸收]%s 全部出口已尝试过（无新出口可试），提前结束重试", trace.tagString())
+			if fallback == nil {
+				fallback = resp
+			}
+			break
 		}
 		if resp.live == nil {
 			// 缓冲响应：非 2xx 或非流式形态。cancel 此刻安全（无存活流）。

@@ -136,3 +136,68 @@ func TestRaceWaveExhaustion(t *testing.T) {
 		t.Fatalf("三个节点都应被尝试一次，实际 %d 次", total)
 	}
 }
+
+// 重试风暴回归：吸收模式 × 镜像 × 波次的乘法曾打出一个请求 1269 次
+// 上游请求。按请求的出口去重后，每个出口至多尝试一次。
+func TestAbsorbNoRetryStorm(t *testing.T) {
+	var hits [4]int
+	proxies := make([]*httptest.Server, 4)
+	for i := range proxies {
+		i := i
+		proxies[i] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits[i]++
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer proxies[i].Close()
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := config{
+		project:          projectSpec{upstream: upstream.URL, directFallback: false},
+		proxyMode:        "custom",
+		absorbStreaming:  true,
+		absorbAttempts:   10,
+		raceEnabled:      true,
+		raceWidth:        2,
+		stickyEnabled:    false,
+		firstByteTimeout: 5 * time.Second,
+		hardTimeout:      30 * time.Second,
+		nonStreamTimeout: 30 * time.Second,
+		streamResume:     false,
+	}
+	application := &app{gateway: newGateway(cfg)}
+	for _, p := range proxies {
+		addr := strings.TrimPrefix(p.URL, "http://")
+		slot, err := slotFromRawURL(addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		application.gateway.addSlot(slot, true)
+	}
+
+	// 非流式请求：吸收模式此前不覆盖的形态——现在内部重试直至池耗尽。
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
+	trace := newRequestTrace()
+	recorder := httptest.NewRecorder()
+	started := time.Now()
+
+	response, guard, err := application.handlePost(recorder, request, "/v1/chat/completions", trace.start.Add(cfg.nonStreamTimeout), trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application.finish(recorder, request, trace, response, nil, guard)
+
+	total := hits[0] + hits[1] + hits[2] + hits[3]
+	if total != 4 {
+		t.Fatalf("每个出口应恰好尝试一次（共 4 次），实际 %d 次", total)
+	}
+	if response.status != http.StatusServiceUnavailable {
+		t.Fatalf("全池耗尽应交出可重试兜底 503，得到 %d", response.status)
+	}
+	if elapsed := time.Since(started); elapsed > 20*time.Second {
+		t.Fatalf("提前收场应在池耗尽后立即返回，实际耗时 %v", elapsed)
+	}
+}
