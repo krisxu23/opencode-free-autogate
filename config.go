@@ -46,6 +46,9 @@ type config struct {
 	refreshInterval      time.Duration
 	probeRoundGap        time.Duration // 两轮初检之间的最小间隔：公益源按分钟级更新，抓太勤只会招限流
 	streamIdle           time.Duration
+	stallWindow          time.Duration // 慢流看门狗窗口：窗口内字节多于 0 但低于阈值判卡死
+	stallMinBytes        int           // 慢流看门狗窗口内的最小字节数（0 关闭看门狗）
+	streamResume         bool          // 中流续写：透传流中断时用已发文本作 prefill 补尾（仅 chat 形态）
 	raceEnabled          bool          // 并行竞速：同一请求同时发往多个出口，最快返回者胜出
 	raceWidth            int           // 竞速中自动节点最多同时尝试几路（手动节点始终全上）
 	hedgeDelay           time.Duration // 对冲竞速：首批无首字节后加发下一批的延迟
@@ -107,6 +110,9 @@ func loadConfig(project projectSpec) config {
 		refreshInterval:      envMilliseconds("PROXY_REFRESH_MS", 300000),
 		probeRoundGap:        envMilliseconds("PROXY_PROBE_ROUND_GAP_MS", 60000),
 		streamIdle:           envMilliseconds("STREAM_IDLE_TIMEOUT", 300000),
+		stallWindow:          envMilliseconds("PROXY_STALL_WINDOW", 60000),
+		stallMinBytes:        envInt("PROXY_STALL_MIN_BYTES", 64),
+		streamResume:         envDefaultOn("PROXY_STREAM_RESUME"),
 		raceEnabled:          envIsOn(envString("PROXY_RACE", "1")),
 		raceWidth:            nonNegative(envInt("PROXY_RACE_WIDTH", 8)),
 		hedgeDelay:           envMilliseconds("PROXY_HEDGE_DELAY", 1500),

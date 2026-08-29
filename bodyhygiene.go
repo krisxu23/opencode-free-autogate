@@ -200,9 +200,15 @@ func hasFunctionName(item any) bool {
 	if typ != "" && typ != "function" {
 		return true // 非 function 型工具（自定义工具等）不做检查
 	}
+	// Responses API（Codex /v1/responses）的 function 工具是扁平形态：
+	// name/description/parameters 直接在顶层，没有 function 包装对象。
+	// 这里必须先认扁平 name，否则 Codex 的全部工具会被当成畸形剥光。
+	if name, ok := obj["name"].(string); ok && strings.TrimSpace(name) != "" {
+		return true
+	}
 	fn, ok := obj["function"].(map[string]any)
 	if !ok {
-		return false // function 型却缺 function 对象：上游必拒
+		return false // chat 形态却缺 function 对象：上游必拒
 	}
 	name, _ := fn["name"].(string)
 	return strings.TrimSpace(name) != ""

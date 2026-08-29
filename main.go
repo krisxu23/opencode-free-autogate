@@ -436,11 +436,15 @@ func (a *app) handlePost(w http.ResponseWriter, r *http.Request, path string, de
 	if stream {
 		request.headers.Set("Accept", "text/event-stream")
 	}
-	// 流式请求配备 SSE 保活：竞速迟迟未决时提前提交响应头并周期发送
-	// 注释行心跳，客户端（ZCode 等工具）不会因等不到响应头而误判断线。
+	// 流式请求配备 SSE 保活：竞速/吸收迟迟未决时提前提交响应头并周期
+	// 发送协议感知心跳，客户端（含 Codex 的 300 秒空闲超时）不会因等不到
+	// 数据而误判断线。吸收模式同样需要：吸收可能在网关内静默重试数分钟，
+	// 没有心跳 Codex 会先于网关放弃连接。旧版曾因心跳与最终响应体交错
+	// 而对吸收模式跳过 guard——那在 Finish 等待心跳协程退出（beba686 起）
+	// 之后已不可能发生，恢复挂载并在此注明，防止再被误删。
 	var guard *sseGuard
-	if stream && !a.gateway.cfg.absorbStreaming {
-		guard = newSseGuard(w)
+	if stream {
+		guard = newSseGuard(w, path)
 	}
 	var response *gatewayResponse
 	if stream && a.gateway.cfg.absorbStreaming {
@@ -455,36 +459,49 @@ func (a *app) handlePost(w http.ResponseWriter, r *http.Request, path string, de
 	return response, guard, err
 }
 
-const (
+var (
 	// sseCommitDelay 是竞速决出赢家的宽限期：正常请求（几乎都小于该值）
 	// 走原有路径，保留完整的状态码/错误重试语义；超过该值仍未决出赢家
-	// 才提前提交 SSE 头转入心跳模式。
+	// 才提前提交 SSE 头转入心跳模式。var 而非 const：测试缩短宽限期用。
 	sseCommitDelay = 5 * time.Second
-	// sseBeatInterval 是心跳注释行的发送间隔。
+	// sseBeatInterval 是心跳的发送间隔。
 	sseBeatInterval = 3 * time.Second
 )
 
-// sseGuard 让长时间竞速的流式请求在客户端看来始终“活着”。
+// sseGuard 让长时间竞速/吸收的流式请求在客户端看来始终“活着”。
 // 所有写入都在互斥锁内且先检查 done，因此 Finish 返回后保证不会再有
 // 任何写入，调用方可以安全接管 ResponseWriter。
 type sseGuard struct {
 	w         http.ResponseWriter
+	path      string // 客户端请求路径：决定心跳按哪种协议变形
 	mu        sync.Mutex
 	done      bool
 	committed bool
-	stopped   chan struct{} // run 退出时关闭，Finish 等待
+	quit      chan struct{} // Finish 信号：未提交时心跳协程立即退出
+	quitOnce  sync.Once
+	stopped   chan struct{} // 心跳协程退出时关闭，Finish 等待
 }
 
-func newSseGuard(w http.ResponseWriter) *sseGuard {
-	g := &sseGuard{w: w, stopped: make(chan struct{})}
-	time.AfterFunc(sseCommitDelay, g.run)
+func newSseGuard(w http.ResponseWriter, path string) *sseGuard {
+	g := &sseGuard{w: w, path: path, quit: make(chan struct{}), stopped: make(chan struct{})}
+	go g.run()
 	return g
 }
 
-// run 由 AfterFunc 触发：提交 200 + SSE 头后按间隔发送心跳注释行，
+// run 在宽限期内未被打断时提交 200 + SSE 头，随后按间隔发送心跳，
 // 直到 Finish。SSE 规范里冒号开头的注释行会被所有客户端忽略。
+// 旧实现用 time.AfterFunc(sseCommitDelay) 定时触发心跳协程：竞速 5 秒内
+// 出赢家时 Finish 也要等满定时器才返回，客户端首字节被硬顶到 5 秒标记。
+// 改成常驻协程 + select 后，未提交即可立即退出。
 func (g *sseGuard) run() {
 	defer close(g.stopped)
+	timer := time.NewTimer(sseCommitDelay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-g.quit:
+		return
+	}
 	g.mu.Lock()
 	if g.done {
 		g.mu.Unlock()
@@ -498,31 +515,70 @@ func (g *sseGuard) run() {
 	header.Set("Cache-Control", "no-cache")
 	g.w.WriteHeader(http.StatusOK)
 	g.beatLocked()
-	for !g.done {
-		g.mu.Unlock()
-		time.Sleep(sseBeatInterval)
-		g.mu.Lock()
-		if g.done {
-			break
-		}
-		g.beatLocked()
-	}
 	g.mu.Unlock()
+	ticker := time.NewTicker(sseBeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			g.mu.Lock()
+			if g.done {
+				g.mu.Unlock()
+				return
+			}
+			g.beatLocked()
+			g.mu.Unlock()
+		case <-g.quit:
+			return
+		}
+	}
+}
+
+// heartbeatPayload 按客户端协议构造心跳载荷。
+// 注释行本身对所有客户端合法，但 Codex 的 SSE 解析器（eventsource_stream）
+// 不把注释当事件，其空闲超时（stream_idle_timeout_ms，默认 300 秒）不因
+// 注释复位——吸收模式/长竞速的静默会被它掐断。因此注释行之外再按路径
+// 注入一条真实事件：responses 发 response.in_progress（OmniRoute 生产验证
+// 的 Codex 兼容载荷）、messages 发 Anthropic ping、chat 发空 delta chunk。
+// 注入的 chat chunk 刻意不带 finish_reason 字段：null 值会被本网关的终止
+// 标记扫描误判为流完整。
+func heartbeatPayload(path string) string {
+	comment := ": keep-alive\n\n"
+	switch {
+	case strings.HasSuffix(path, "/v1/responses"):
+		return comment + `data: {"type":"response.in_progress"}` + "\n\n"
+	case strings.HasSuffix(path, "/v1/messages"):
+		return comment + "event: ping\ndata: {\"type\":\"ping\"}\n\n"
+	default:
+		chunk, err := json.Marshal(map[string]any{
+			"id":      "chatcmpl-keepalive",
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   "keepalive",
+			"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}}},
+		})
+		if err != nil {
+			return comment
+		}
+		return comment + "data: " + string(chunk) + "\n\n"
+	}
 }
 
 func (g *sseGuard) beatLocked() {
-	_, _ = io.WriteString(g.w, ": keep-alive\n\n")
+	_, _ = io.WriteString(g.w, heartbeatPayload(g.path))
 	if flusher, ok := g.w.(http.Flusher); ok {
 		flusher.Flush()
 	}
 }
 
-// Finish 停止心跳并等待 goroutine 退出；返回后不会再有任何写入，
+// Finish 停止心跳并等待心跳协程退出；返回后不会再有任何写入，
 // 调用方可以安全接管 ResponseWriter 写入真实 SSE 数据。
+// 未提交过心跳（竞速在宽限期内出赢家）时立即返回，不拖慢首字节。
 func (g *sseGuard) Finish() {
 	g.mu.Lock()
 	g.done = true
 	g.mu.Unlock()
+	g.quitOnce.Do(func() { close(g.quit) })
 	<-g.stopped
 }
 
@@ -535,22 +591,33 @@ func (g *sseGuard) Committed() bool {
 	return g.committed
 }
 
+// streamOptions 是流式转发的全部可调参数：writeGatewayResponse 与
+// writeCommittedStream 共用，避免参数列表无限膨胀。
+type streamOptions struct {
+	idle          time.Duration
+	stallWindow   time.Duration // 慢流看门狗窗口；0 或 stallMinBytes=0 关闭看门狗
+	stallMinBytes int
+	observe       func(truncated bool)
+	hyg           *sseSanitizer
+	resumer       *streamResumer // 中流续写；nil 表示不支持续写的形态
+}
+
 // writeCommittedStream 处理已提前提交 SSE 头的响应：赢家的流直接透传；
 // 其余情形（错误或非流式兜底）转为 SSE 错误事件，让客户端拿到明确原因。
-func writeCommittedStream(w http.ResponseWriter, r *http.Request, response *gatewayResponse, streamIdle time.Duration, observe func(truncated bool), hyg *sseSanitizer) {
+func writeCommittedStream(w http.ResponseWriter, r *http.Request, response *gatewayResponse, opts streamOptions) {
 	if response.live == nil && response.status >= 200 && response.status < 300 && len(response.body) > 0 {
 		// 吸收模式的成品：已验证完整的整段 SSE 原文一次性交付。
 		_, _ = w.Write(response.body)
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
-		if observe != nil {
-			observe(false)
+		if opts.observe != nil {
+			opts.observe(false)
 		}
 		return
 	}
 	if response.live != nil {
-		streamResponse(w, r.Context(), response.live, streamIdle, observe, hyg)
+		streamResponse(w, r.Context(), response.live, opts)
 		return
 	}
 	message := "上游请求失败"
@@ -695,6 +762,18 @@ func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace
 	if a.gateway.cfg.sseHygiene && response != nil && response.live != nil {
 		hyg = newSSESanitizer()
 	}
+	opts := streamOptions{
+		idle:          a.gateway.cfg.streamIdle,
+		stallWindow:   a.gateway.cfg.stallWindow,
+		stallMinBytes: a.gateway.cfg.stallMinBytes,
+		observe:       observe,
+		hyg:           hyg,
+	}
+	// 中流续写：仅 chat 形态且响应来自上游（带 origin）时配备；
+	// eligible/resume 内部再做开关、工具调用与预算把关。
+	if response != nil && response.live != nil && response.origin != nil {
+		opts.resumer = newStreamResumer(a.gateway, response.origin, trace)
+	}
 	// 回显取证：胜者响应头脱敏落日志，判断上游是否下发 turn-scoped 状态头。
 	if a.gateway.cfg.echoDebug && response != nil {
 		logEchoHeaders(r.URL.Path, response.status, response.header)
@@ -708,10 +787,10 @@ func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace
 	}
 	if guard != nil && guard.Committed() {
 		// 响应头已提前提交，状态码无法再改变：赢家流透传，其余转为 SSE 错误事件。
-		writeCommittedStream(w, r, response, a.gateway.cfg.streamIdle, observe, hyg)
+		writeCommittedStream(w, r, response, opts)
 		return
 	}
-	writeGatewayResponse(w, r, response, a.gateway.cfg.streamIdle, observe, hyg)
+	writeGatewayResponse(w, r, response, opts)
 }
 
 func (a *app) logCompletion(r *http.Request, trace *requestTrace) {
@@ -733,7 +812,7 @@ func (a *app) logCompletion(r *http.Request, trace *requestTrace) {
 		result, r.Method, r.URL.Path, status, retries, len(trace.proxies), time.Since(trace.start).Milliseconds(), proxy)
 }
 
-func writeGatewayResponse(w http.ResponseWriter, r *http.Request, response *gatewayResponse, streamIdle time.Duration, observe func(truncated bool), hyg *sseSanitizer) {
+func writeGatewayResponse(w http.ResponseWriter, r *http.Request, response *gatewayResponse, opts streamOptions) {
 	for key, values := range response.header {
 		for _, value := range values {
 			w.Header().Add(key, value)
@@ -756,7 +835,7 @@ func writeGatewayResponse(w http.ResponseWriter, r *http.Request, response *gate
 		_, _ = w.Write(response.body)
 		return
 	}
-	streamResponse(w, r.Context(), response.live, streamIdle, observe, hyg)
+	streamResponse(w, r.Context(), response.live, opts)
 }
 
 // streamTerminals 是判定流完整结束的标记：见到任一个即认为上游正常收尾。
@@ -772,7 +851,56 @@ var streamTerminals = [][]byte{
 	[]byte("response.incomplete"),
 }
 
-func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveResponse, idle time.Duration, observe func(truncated bool), hyg *sseSanitizer) {
+// streamTextCollector 从待转发的 chat 形态字节里流式提取
+// choices[0].delta.content 全文与 tool_calls 出现标记，供中流续写使用。
+type streamTextCollector struct {
+	buf      []byte
+	text     strings.Builder
+	sawTools bool
+}
+
+func (c *streamTextCollector) feed(chunk []byte) {
+	c.buf = append(c.buf, chunk...)
+	for {
+		idx := bytes.IndexByte(c.buf, '\n')
+		if idx < 0 {
+			if len(c.buf) > 1<<20 { // 异常无换行流防御
+				c.buf = nil
+			}
+			break
+		}
+		line := string(c.buf[:idx])
+		c.buf = c.buf[idx+1:]
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(trimmed[len("data:"):])
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var probe struct {
+			Choices []struct {
+				Delta struct {
+					Content   string          `json:"content"`
+					ToolCalls json.RawMessage `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(payload), &probe) != nil {
+			continue
+		}
+		if len(probe.Choices) == 0 {
+			continue
+		}
+		c.text.WriteString(probe.Choices[0].Delta.Content)
+		if len(probe.Choices[0].Delta.ToolCalls) > 0 && string(probe.Choices[0].Delta.ToolCalls) != "null" {
+			c.sawTools = true
+		}
+	}
+}
+
+func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveResponse, opts streamOptions) {
 	defer live.Close()
 	flusher, _ := w.(http.Flusher)
 	if flusher != nil {
@@ -810,6 +938,11 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 			}
 		}
 	}
+	// 续写素材采集：只在有续写器时才做逐行 JSON 解析，热路径零开销。
+	var textCol *streamTextCollector
+	if opts.resumer != nil {
+		textCol = &streamTextCollector{}
+	}
 	scan := func(chunk []byte) {
 		if terminalSeen {
 			return
@@ -831,6 +964,9 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 		}
 		scan(chunk)
 		collectUsage(chunk)
+		if textCol != nil {
+			textCol.feed(chunk)
+		}
 		if _, err := w.Write(chunk); err != nil {
 			return false
 		}
@@ -842,21 +978,39 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 	// 流结束时冲洗残留半行并汇报卫生统计；必须在 report() 之前，
 	// 让终止标记判定看到完整的客户端可见字节。
 	flushTail := func() {
-		if hyg == nil {
+		if opts.hyg == nil {
 			return
 		}
-		if tail := hyg.flush(); len(tail) > 0 {
+		if tail := opts.hyg.flush(); len(tail) > 0 {
 			writeOut(tail)
 		}
-		if hyg.dropped > 0 {
-			log.Printf("[SSE卫生] 本流丢弃 %d 行无效数据", hyg.dropped)
+		if opts.hyg.dropped > 0 {
+			log.Printf("[SSE卫生] 本流丢弃 %d 行无效数据", opts.hyg.dropped)
 		}
 	}
 	// report 只在上游侧结束时调用；客户端主动断开（写失败/请求取消）
 	// 与上游质量无关，不记账。
 	report := func() {
-		if observe != nil {
-			observe(!terminalSeen)
+		if opts.observe != nil {
+			opts.observe(!terminalSeen)
+		}
+	}
+	// 上游侧流结束（空闲超时/慢流看门狗/EOF）的统一收尾：先按未见终止
+	// 标记记账（出口确实断过，该降权降权），再尝试中流续写——续写成功
+	// 时客户端拿到带终止标记的完整回复，失败则维持静默干净关闭，
+	// 交给客户端既有的自动重试语义。
+	finish := func() {
+		flushTail()
+		report()
+		if terminalSeen || ctx.Err() != nil || textCol == nil {
+			return
+		}
+		sent := textCol.text.String()
+		if !opts.resumer.eligible(sent) {
+			return
+		}
+		if opts.resumer.resume(w, ctx, sent) {
+			terminalSeen = true
 		}
 	}
 	// 实测结论：流中断时补发显式 SSE 错误事件会让 agent 工具把它当作
@@ -864,34 +1018,70 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 	// finish_reason）反而触发它的自动重试。所以这里保持静默干净关闭，
 	// 不注入任何错误载荷。
 	// 复用单个计时器实现空闲超时：到点取消上游请求，阻塞中的 Read 随之返回。
-	timer := time.AfterFunc(idle, live.cancel)
+	timer := time.AfterFunc(opts.idle, live.cancel)
 	defer timer.Stop()
+	// 慢流看门狗状态：只抓"还在滴但基本卡死"的流（窗口内字节多于 0 但
+	// 低于阈值）。完全静默的流交给空闲超时——思考模型合法的长停顿跨窗
+	// 时清账重启，不会误杀。
+	var windowStart time.Time
+	var windowBytes int
+	var lastRead time.Time
+	stallKill := func(n int) (bool, int) {
+		if opts.stallWindow <= 0 || opts.stallMinBytes <= 0 || n <= 0 {
+			return false, 0
+		}
+		now := time.Now()
+		defer func() { lastRead = now }()
+		if !lastRead.IsZero() && now.Sub(lastRead) > opts.stallWindow {
+			windowStart = now
+			windowBytes = 0
+		}
+		if windowStart.IsZero() {
+			windowStart = now
+		}
+		windowBytes += n
+		if now.Sub(windowStart) < opts.stallWindow {
+			return false, windowBytes
+		}
+		dribble := windowBytes < opts.stallMinBytes
+		observed := windowBytes
+		windowStart = now
+		windowBytes = 0
+		return dribble, observed
+	}
 	for {
-		timer.Reset(idle)
+		timer.Reset(opts.idle)
 		n, err := live.response.Body.Read(buffer)
 		stopped := timer.Stop()
 		if n > 0 {
+			if dribble, observed := stallKill(n); dribble {
+				log.Printf("[流] 慢流看门狗：%s 窗口内仅 %d 字节，判定僵尸流关闭", opts.stallWindow, observed)
+				live.cancel()
+				finish()
+				return
+			}
 			out := buffer[:n]
-			if hyg != nil {
-				out = hyg.feed(out)
+			if opts.hyg != nil {
+				out = opts.hyg.feed(out)
 			}
 			if !writeOut(out) {
 				return
 			}
 		}
 		if !stopped {
-			log.Printf("[流] %s 内无数据，已关闭连接", idle)
-			flushTail()
-			report()
+			log.Printf("[流] %s 内无数据，已关闭连接", opts.idle)
+			live.cancel()
+			finish()
 			return
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) && ctx.Err() == nil {
 				log.Printf("[流] upstream stream ended: %v", err)
 			}
-			flushTail()
 			if ctx.Err() == nil {
-				report()
+				finish()
+			} else {
+				flushTail()
 			}
 			return
 		}

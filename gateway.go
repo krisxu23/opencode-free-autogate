@@ -32,6 +32,7 @@ var (
 	errNoProxy         = errors.New("没有可用代理")
 	errAllExitsFailed  = errors.New("本轮出口全部未交付（多为上游侧故障）")
 	errStreamTruncated = errors.New("上游流在首个数据块前中断")
+	errUpstreamGarbage = errors.New("流式请求返回了非流式内容")
 )
 
 const maxUpstreamBody = 64 << 20
@@ -1014,6 +1015,7 @@ type gatewayResponse struct {
 	header http.Header
 	body   []byte
 	live   *liveResponse
+	origin *upstreamRequest // 产生本响应的原始请求：中流续写需要用它构造补尾请求
 }
 
 type liveResponse struct {
@@ -1244,6 +1246,20 @@ func (g *gateway) perform(ctx context.Context, request upstreamRequest, proxyURL
 	status := live.response.StatusCode
 	header := cloneEndToEndHeaders(live.response.Header)
 	if request.stream && status < 400 {
+		// 非 SSE 形态拦截（9router 经验）：流式请求却拿到 HTML 错误页或
+		// 被上游忽略 stream 的 JSON 时，在 Content-Type 层就拦下换出口，
+		// 不让垃圾进入转发管道（更早、比 SSE 行级清洗更稳）。Content-Type
+		// 缺失时放行，交给 validateStreamHead 按首段数据判定。
+		if ct := live.response.Header.Get("Content-Type"); ct != "" && !isStreamContentType(ct) {
+			body, _ := live.readAll(request.deadline)
+			garbageBase := request.upstream
+			if garbageBase == "" {
+				garbageBase = g.cfg.project.upstream
+			}
+			log.Printf("[形态] %s 流式请求返回非流式内容 Content-Type=%q（%d 字节），换出口重试",
+				shortUpstream(garbageBase), ct, len(body))
+			return nil, errUpstreamGarbage
+		}
 		// 胜利者验证门：等到首个真实 SSE 数据行才把响应交给调用方。
 		// 200 + 空流（上游提前掐断的高发形态）在这里被拦下换下一出口，
 		// 客户端永远不会收到一条没有任何内容的流。
@@ -1253,7 +1269,7 @@ func (g *gateway) perform(ctx context.Context, request upstreamRequest, proxyURL
 			return nil, err
 		}
 		live.response.Body = &prefixedBody{prefix: prefix, src: live.response.Body}
-		return &gatewayResponse{status: status, header: header, live: live}, nil
+		return &gatewayResponse{status: status, header: header, live: live, origin: &request}, nil
 	}
 	body, err := live.readAll(request.deadline)
 	if err != nil {
@@ -1955,6 +1971,12 @@ func (g *gateway) performRelay(ctx context.Context, request upstreamRequest) (*g
 	status := live.response.StatusCode
 	header := cloneEndToEndHeaders(live.response.Header)
 	if request.stream && status < 400 {
+		// 与代理层同一道非 SSE 形态拦截：中继返回 HTML/JSON 时不进管道。
+		if ct := live.response.Header.Get("Content-Type"); ct != "" && !isStreamContentType(ct) {
+			body, _ := live.readAll(request.deadline)
+			log.Printf("[形态] 中继流式请求返回非流式内容 Content-Type=%q（%d 字节），换道重试", ct, len(body))
+			return nil, errUpstreamGarbage
+		}
 		// 与代理层同一道胜利者验证门：等到首个真实 SSE 数据行才交付，
 		// 中继返回 200 空流时同样拦下重试，客户端不会收到无内容响应。
 		prefix, err := validateStreamHead(ctx, live, request.deadline)
@@ -1963,7 +1985,7 @@ func (g *gateway) performRelay(ctx context.Context, request upstreamRequest) (*g
 			return nil, err
 		}
 		live.response.Body = &prefixedBody{prefix: prefix, src: live.response.Body}
-		return &gatewayResponse{status: status, header: header, live: live}, nil
+		return &gatewayResponse{status: status, header: header, live: live, origin: &request}, nil
 	}
 	body, err := live.readAll(request.deadline)
 	if err != nil {
@@ -2008,6 +2030,13 @@ func retryableStatus(status int) bool {
 		return true
 	}
 	return status >= 500 && status <= 599
+}
+
+// isStreamContentType 判定响应是否为 SSE 流。空 Content-Type 不在此判定
+//（交由 validateStreamHead 按首段数据把关），其余非 event-stream 形态
+// （HTML 错误页、被忽略 stream 的 JSON）视为垃圾拦截。
+func isStreamContentType(contentType string) bool {
+	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
 }
 
 func jsonGatewayResponse(status int, message string) *gatewayResponse {

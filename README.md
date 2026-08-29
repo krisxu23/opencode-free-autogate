@@ -208,9 +208,13 @@ https://proxy.amux.ai/api/proxies
 | 功能 | 说明 |
 |---|---|
 | **协议兼容** | OpenAI / Anthropic / Codex 三种路由，客户端零改造接入 |
-| **请求体卫生** | 自动剔除缺失 function.name 的工具条目、tools 超 128 截断、剥离 client_metadata、空 `tool_calls.arguments` 补 `"{}"`（Minimax 系严格上游会对空参数拒收整个请求）——畸形请求体不再烧掉出口尝试 |
+| **请求体卫生** | 自动剔除缺失 function.name 的工具条目（chat 形态按 function.name 判定、Codex /v1/responses 扁平形态按顶层 name 判定，两者都不误删）、tools 超 128 截断、剥离 client_metadata、空 `tool_calls.arguments` 补 `"{}"`（Minimax 系严格上游会对空参数拒收整个请求）——畸形请求体不再烧掉出口尝试 |
 | **请求指纹整形** | 出站 body 顶层键序统一对齐原生 CLI 构造序（chat 形态取自 @ai-sdk/openai-compatible 源码、responses 形态取自 OmniRoute 抓包），消灭"改写过=字母序、没改过=原序"的双指纹特征；Anthropic `/v1/messages` 无可靠依据，刻意不整形 |
 | **SSE 分块卫生** | 直通流与吸收流双路径：丢弃解析失败的 `data:` 行（上游夹带的错误页不再喂给客户端）、删除空 `tool_calls:[]`、补缺失的 object/created 字段；>1MB 整行透传、截断维持静默干净关闭语义 |
+| **SSE 保活心跳** | 竞速/吸收静默期按客户端协议注入心跳：chat 发空 delta chunk、Codex responses 发 `response.in_progress`（其 eventsource 解析器不认注释行，300 秒空闲超时需要真实事件复位）、Anthropic 发 `event: ping` |
+| **非 SSE 形态拦截** | 流式请求收到 HTML 错误页/被忽略 stream 的 JSON 时，在 Content-Type 层直接拦下换出口重试，不让垃圾进入转发管道（9router 经验） |
+| **中流续写** | 透传流中途断流且未到终止标记时，自动以已发文本作 assistant prefill 补尾一次，接缝去重（重叠/重启双形态）后无缝交付终止标记——免费上游断流不再迫使客户端整轮重烧配额（仅 chat 形态，`PROXY_STREAM_RESUME` 可关） |
+| **慢流看门狗** | 窗口内字节多于 0 但低于阈值判僵尸流掐断；思考模型的长静默交给空闲超时，不误杀 |
 | **思考模型兼容** | deepseek/kimi/minimax 系模型多轮对话自动补 `reasoning_content` 占位符，防止 OpenAI 格式客户端缺字段导致上游 400 |
 | **管家流量拦截** | 客户端的配额探测类请求（极保守匹配＋日志可见）本地直接应答，不消耗上游额度 |
 | **UA 版本同步** | 每天从 npm 拉官方 CLI 最新版本号，固定版本号不会日久成为识别特征 |
@@ -288,6 +292,9 @@ https://proxy.amux.ai/api/proxies
 | `PROXY_ABSORB_ATTEMPTS` | `10` | 吸收模式最大换道尝试次数（config.json `absorb_attempts`） |
 | `PROXY_BODY_FINGERPRINT` | `1` | 出站 body 键序指纹整形开关 |
 | `PROXY_SSE_HYGIENE` | `1` | SSE 分块卫生开关（丢无效行/删空 tool_calls/补缺失字段） |
+| `PROXY_STREAM_RESUME` | `1` | 中流续写开关（仅 chat 形态；流中出现过 tool_calls、预算不足 45 秒时自动放弃） |
+| `PROXY_STALL_WINDOW` | `60000` | 慢流看门狗窗口（毫秒） |
+| `PROXY_STALL_MIN_BYTES` | `64` | 看门狗窗口内最小字节数，窗口内字节多于 0 且低于该值判僵尸流；设 0 关闭 |
 | `PROXY_ECHO_DEBUG` | `0` | 胜者响应头脱敏回显日志（取证用，日常不开） |
 | `PROXY_DEEP_PROBE_INTERVAL` | `3600000` | chat 深检间隔（毫秒） |
 | `PROXY_PROBE_CONCURRENCY` | `32` | 检测并发路数，GET 初检与 chat 深检/复检共用（1-128；节点上千时调高，GUI「检测并发」输入框同款） |
