@@ -237,6 +237,11 @@ func (g *gateway) refreshPool(ctx context.Context) {
 		}
 		if !result.ok {
 			g.noteFailed(result.slot.addr)
+			// 高级映射死链：移出 sing-box 常驻映射集并入冷却，
+			// 否则端口映射只增不减（曾一轮 5267 个）。
+			if strings.HasPrefix(result.slot.addr, "127.0.0.1:") {
+				g.advEvictAddr(result.slot.addr)
+			}
 			failed.Add(1)
 			return
 		}
