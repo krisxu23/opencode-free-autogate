@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/url"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -30,7 +31,7 @@ const (
 	ipRepInterval     = 2 * time.Second    // 串行 worker 相邻请求间隔（对第三方礼貌）
 	ipRepResolveTTL   = time.Hour          // 域名出口 → IP 的解析缓存
 	ipRepSourceOff    = 30 * time.Minute   // 连续失败后的源退避
-	ipRepSourceFails  = 3                  // 触发退避的连续失败次数
+	ipRepSourceFails  = 5                  // 触发退避的连续失败次数（扫池高峰抖动多，别太敏感）
 	ipRepTimeout      = 20 * time.Second   // 单次抓取超时
 	ipRepRefreshEvery = 24 * time.Hour     // 正式池重查周期
 	ipRepMaxCache     = 4096               // 结果缓存上限
@@ -79,6 +80,9 @@ type ipReputer struct {
 	// 原始服务器地址——否则信誉体检会去查本机回环，毫无意义。
 	originHost func(addr string) string
 
+	// exitURLs 提供正式池出口（供直连抓取失败时借道重试）。
+	exitURLs func() []*url.URL
+
 	ipriskBase string
 
 	// 测试注入点
@@ -106,6 +110,50 @@ func newIPReputer(sink func(addr string, res *ipRepResult)) *ipReputer {
 	}
 	r.fetch = r.httpFetch
 	return r
+}
+
+// fetchPage 抓取页面：先直连；失败时借道正式池出口重试（最多 2 个）。
+// 初检扫池高峰期上行被 128 路探测打满，直连到检测站容易超时——
+// 而正式池出口刚通过探活，链路质量有保障。
+func (r *ipReputer) fetchPage(pageURL string) (int, string, error) {
+	status, body, err := r.fetch(pageURL)
+	if err == nil && status == http.StatusOK {
+		return status, body, nil
+	}
+	firstErr, firstStatus := err, status
+	if r.exitURLs == nil {
+		return firstStatus, body, firstErr
+	}
+	exits := r.exitURLs()
+	if len(exits) > 2 {
+		exits = exits[:2]
+	}
+	for _, pu := range exits {
+		if pu == nil {
+			continue
+		}
+		client := &http.Client{Timeout: ipRepTimeout, Transport: sharedTransports.get(pu)}
+		req, err := http.NewRequest(http.MethodGet, pageURL, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		buf := make([]byte, 256<<10)
+		n, _ := io.ReadFull(resp.Body, buf)
+		if n < 0 {
+			n = 0
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			log.Printf("[信誉] 直连失败，借道出口 %s 抓取成功", pu.Host)
+			return resp.StatusCode, string(buf[:n]), nil
+		}
+	}
+	return firstStatus, body, firstErr
 }
 
 // httpFetch 默认抓取实现。
@@ -269,17 +317,23 @@ func (r *ipReputer) check(addr string) *ipRepResult {
 			return nil
 		}
 	}
-	status, body, err := r.fetch(r.ipriskBase + "/ip/" + ip)
+	status, body, err := r.fetchPage(r.ipriskBase + "/ip/" + ip)
 	if err != nil || status != http.StatusOK {
 		// 404 = 该 IP 不在 iprisk 库：个体属性而非站点故障，不计退避。
 		if err == nil && status == http.StatusNotFound {
 			return nil
+		}
+		if err != nil {
+			log.Printf("[信誉] 抓取失败 status=%d err=%v", status, err)
+		} else {
+			log.Printf("[信誉] 抓取失败 status=%d body=%q", status, truncateForLog(body, 120))
 		}
 		r.noteFailure()
 		return nil
 	}
 	res := parseIPRiskPage(ip, body)
 	if res == nil {
+		log.Printf("[信誉] 页面解析失败（无评分锚点）body=%q", truncateForLog(body, 160))
 		r.noteFailure()
 		return nil
 	}

@@ -3,6 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -59,11 +62,11 @@ func TestIPRiskBackoff(t *testing.T) {
 	r.fetch = func(url string) (int, string, error) {
 		return 503, "", errors.New("boom")
 	}
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 5; i++ {
 		r.process("1.2.3.4:1080")
 	}
 	if r.available() {
-		t.Fatal("连续 3 次失败后应进入退避")
+		t.Fatal("连续 5 次失败后应进入退避")
 	}
 	if r.cache["1.2.3.4:1080"] != nil {
 		t.Fatal("失败结果不应写入缓存")
@@ -185,5 +188,50 @@ func TestNotFoundNoBackoff(t *testing.T) {
 	}
 	if !r.available() {
 		t.Fatal("404 不应触发源退避")
+	}
+}
+
+// 直连抓取失败时，借道正式池出口重试成功。
+func TestFetchPageViaExitFallback(t *testing.T) {
+	var exitHits int
+	// 假代理：http 目标走绝对形式请求，直接回 200 + 页面
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		exitHits++
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(sampleIPRiskHTML))
+	}))
+	defer proxy.Close()
+
+	r := newIPReputer(nil)
+	r.ipriskBase = "http://iprisk.test"
+	r.exitURLs = func() []*url.URL {
+		pu, _ := url.Parse(proxy.URL)
+		return []*url.URL{pu}
+	}
+	r.fetch = func(url string) (int, string, error) {
+		return 503, "upstream busy", nil // 直连必败
+	}
+	status, body, err := r.fetchPage("http://iprisk.test/ip/1.2.3.4")
+	if err != nil || status != 200 {
+		t.Fatalf("借道应成功: status=%d err=%v", status, err)
+	}
+	if !strings.Contains(body, "纯净度评分为 32/100") {
+		t.Fatalf("借道抓到的应是页面: %q", body[:60])
+	}
+	if exitHits != 1 {
+		t.Fatalf("出口应被使用 1 次，实际 %d", exitHits)
+	}
+}
+
+// 无出口可用时透传直连失败。
+func TestFetchPageNoExits(t *testing.T) {
+	r := newIPReputer(nil)
+	r.exitURLs = func() []*url.URL { return nil }
+	r.fetch = func(url string) (int, string, error) {
+		return 503, "busy", nil
+	}
+	status, _, err := r.fetchPage("http://x/ip/1.2.3.4")
+	if err != nil || status != 503 {
+		t.Fatalf("无出口应透传直连结果: %d %v", status, err)
 	}
 }

@@ -241,6 +241,15 @@ func newGateway(cfg config) *gateway {
 	g.iprep.originHost = func(addr string) string {
 		return g.advOriginHost(addr)
 	}
+	g.iprep.exitURLs = func() []*url.URL {
+		urls := make([]*url.URL, 0, 4)
+		for _, s := range g.raceExits() {
+			if s.proxyURL != nil {
+				urls = append(urls, s.proxyURL)
+			}
+		}
+		return urls
+	}
 	return g
 }
 
