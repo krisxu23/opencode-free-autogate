@@ -154,6 +154,7 @@ func extractModelIDs(body []byte) ([]string, error) {
 }
 
 // modelUpstreamIDs 返回供客户端使用的上游模型完整 ID（含 -free 后缀），已排序。
+// dead 模型（模型健康探测判定下线）从列表剔除，避免客户端反复撞已下线的模型。
 func (g *gateway) modelUpstreamIDs(ctx context.Context) []string {
 	rename, _ := g.modelMaps(ctx)
 	unique := make(map[string]struct{}, len(rename)+len(g.cfg.project.extraModels))
@@ -165,6 +166,9 @@ func (g *gateway) modelUpstreamIDs(ctx context.Context) []string {
 	}
 	ids := make([]string, 0, len(unique))
 	for id := range unique {
+		if g.modelHealth != nil && !g.modelHealth.isAlive(id) {
+			continue
+		}
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -173,7 +177,7 @@ func (g *gateway) modelUpstreamIDs(ctx context.Context) []string {
 
 // modelIDs 返回对外展示的模型名列表（已排序），供 /v1/models 与界面共用。
 // 所有 opencode 模型名带 opencode/ 前缀，Cline 模型名带 cline/ 前缀，
-// 方便前端区分不同供应商。
+// 方便前端区分不同供应商。dead 模型（健康探测判定下线）不对外展示。
 func (g *gateway) modelIDs(ctx context.Context) []string {
 	rename, _ := g.modelMaps(ctx)
 	unique := make(map[string]struct{}, len(rename)+len(g.cfg.project.extraModels))
@@ -185,6 +189,9 @@ func (g *gateway) modelIDs(ctx context.Context) []string {
 	}
 	ids := make([]string, 0, len(unique))
 	for id := range unique {
+		if g.modelHealth != nil && !g.modelHealth.isAlive(id) {
+			continue
+		}
 		ids = append(ids, "opencode/"+id)
 	}
 	sort.Strings(ids)
@@ -230,6 +237,15 @@ func (g *gateway) rewriteModelPayload(ctx context.Context, payload map[string]an
 	}
 	_, redirect := g.modelMaps(ctx)
 	model, _ := payload["model"].(string)
+	// 别名映射（P2-8，借鉴 zen-proxy modelAliases）：客户端内置的固定模型名
+	//（如 claude-sonnet-4.5）先查别名表 → 免费模型，再走 redirect。
+	if aliased, ok := g.cfg.modelAliases[model]; ok {
+		if upstream, exists := redirect[aliased]; exists {
+			payload["model"] = upstream
+			log.Printf("[模型别名] %s -> %s -> %s", model, aliased, upstream)
+			return true
+		}
+	}
 	// 直接查找：兼容客户端发送不带前缀的原始模型名。
 	upstream, exists := redirect[model]
 	if !exists && strings.HasPrefix(model, "opencode/") {

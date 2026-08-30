@@ -63,6 +63,8 @@ type requestTrace struct {
 	model          string              // 请求模型（收尾行展示）
 	firstByte      time.Duration       // 响应头到达耗时；未知为 0（收尾行展示）
 	usage          *usageSnapshot      // 每请求 token 用量（收尾行展示）
+	originalModel  string              // 模型 fallback 前客户端请求的原始模型名，供响应回写
+	modelSwitched  bool                // 模型 fallback 链是否至少切换过一次
 }
 
 // usageSnapshot 是单请求 token 用量快照，供收尾日志展示；日聚合仍走 usageStats。
@@ -86,6 +88,24 @@ func (t *requestTrace) markTried(addr string) {
 func (t *requestTrace) triedBefore(addr string) bool {
 	_, ok := t.triedExits[addr]
 	return ok
+}
+
+// clearTried 清空请求级出口去重（模型 fallback 换模型时调用）：换模型是
+// 新的上游行为，同一批出口值得重新尝试——限流是模型级时，换出口无用，
+// 必须换模型后把出口池重新放出来。
+func (t *requestTrace) clearTried() {
+	t.triedExits = make(map[string]struct{})
+}
+
+// noteModelFallback 记录模型 fallback 事件：原始模型名 + 已切换标记。
+// 收尾日志据此展示，响应侧据此回写 model 字段。
+func (t *requestTrace) noteModelFallback(original, target string) {
+	if t.originalModel == "" {
+		t.originalModel = original
+	}
+	t.modelSwitched = true
+	t.model = target
+	log.Printf("[模型fallback]%s %s -> %s（模型级限流，换模型重试）", t.tagString(), original, target)
 }
 
 // tagString 返回带前导空格的日志标签；无标签时返回空串，调用方直接
@@ -189,6 +209,8 @@ type gateway struct {
 	rootContext   context.Context
 	modelMu       sync.Mutex
 	modelCache    *cachedModels
+	modelHealth   *modelHealthTracker // 模型级健康探测：dead 模型自动剔除（见 modelhealth.go）
+	absorbCache   *absorbCache        // 吸收产物响应缓存（见 absorbcache.go）
 
 	mirrorMu     sync.Mutex
 	mirrorState  map[string]*mirrorHealth
@@ -244,6 +266,10 @@ func newGateway(cfg config) *gateway {
 		deepQueue:   make(chan slot, 2048),
 		freshPassed: make(map[string]slot),
 		sticky:      make(map[string]stickyEntry),
+		modelHealth: newModelHealthTracker(),
+	}
+	if cfg.absorbCacheTTL > 0 {
+		g.absorbCache = newAbsorbCache(cfg.absorbCacheTTL)
 	}
 	usageObserver = func(model string, prompt, completion, cached int64) {
 		g.usage.Observe(model, prompt, completion, cached)
@@ -342,6 +368,11 @@ func (g *gateway) start(ctx context.Context) {
 
 	// 每小时 chat 深检：穿透额度门，抓"网络通但配额枯竭"的假健康节点。
 	go g.startDeepProber(ctx)
+	// 模型级健康探测：dead 模型自动剔除出对外列表与 fallback 链。
+	go g.startModelProber(ctx)
+	// 熔断 OPEN 态主动恢复探测：后台直连探活，上游一恢复就提前解除熔断，
+	// 不必等请求触发的半开探针或静默到期。
+	go g.startOutageRecoveryProbe(ctx)
 	// Windows 休眠恢复检测：清死连接 + 补槽。
 	startWakeDetector(g, ctx)
 	// UA 版本跟随官方发版，防固定版本号成为识别特征。
@@ -749,11 +780,20 @@ func parseResetHint(body []byte) time.Duration {
 }
 
 const (
-	minQuotaBench    = 30 * time.Second // 短于该值的 Retry-After 没有板凳意义
-	maxQuotaBench    = 24 * time.Hour   // 板凳上限：跨天重置的额度最多等一天
-	creditBenchDur   = 24 * time.Hour   // 计费类错误（402）：探活无法证伪充值，直接一天
+	minQuotaBench   = 30 * time.Second  // 短于该值的 Retry-After 没有板凳意义
+	maxQuotaBench   = 24 * time.Hour    // 板凳上限：跨天重置的额度最多等一天
+	creditBenchDur  = 24 * time.Hour    // 计费类错误（402）：探活无法证伪充值，直接一天
 	overloadBenchDur = 5 * time.Minute  // 过载/容量挤兑（5xx+特征标记）：推断短板凳
+	// maxOpenCodeRetryAfter 是 opencode 上游 429 的 Retry-After 封顶（借鉴
+	// opencode-swap 的 maxRateLimitCooldownMs）：上游可能把周重置日期塞进
+	// Retry-After，滚动窗口其实 1 小时左右就清了；封顶后转推断值，探活通过
+	// 即可提前复出。PROXY_MAX_RETRY_AFTER（毫秒）可覆盖。
+	maxOpenCodeRetryAfter = 1 * time.Hour
 )
+
+// maxRetryAfterOverride 由 loadConfig 按 PROXY_MAX_RETRY_AFTER 注入；
+// 默认与 maxOpenCodeRetryAfter 一致。var 而非 const：可被测试直接改写。
+var maxRetryAfterOverride = maxOpenCodeRetryAfter
 
 // classifyUpstreamFailure 把上游错误响应翻译成出口板凳策略：
 // 返回 (时长, 来源)。authoritative 表示时间来自上游声明——深检不提前戳；
@@ -774,6 +814,18 @@ func classifyUpstreamFailure(status int, body []byte, retryAfter string) (time.D
 		return 0, benchNone
 	}
 	if d := parseRetryAfter(retryAfter); d > 0 {
+		// Retry-After 封顶（借鉴 opencode-swap）：opencode 上游 429 时可能把
+		// 周重置日期塞进 Retry-After（长窗口限流误报），直接采信会让出口
+		// 罚站好几天；滚动窗口其实 1 小时左右就清了。封顶后降级为推断值，
+		// 允许深检提前回归（额度一清立刻复出）。
+		cap := maxOpenCodeRetryAfter
+		if maxRetryAfterOverride > 0 {
+			cap = maxRetryAfterOverride
+		}
+		if d > cap {
+			log.Printf("[限流] Retry-After %s 超上限，封顶为 %s（推断值）", d.Round(time.Second), cap)
+			return cap, benchHeuristic
+		}
 		return clampBench(d), benchAuthoritative
 	}
 	if d := parseResetHint(body); d > 0 {
@@ -1406,6 +1458,22 @@ func (g *gateway) perform(ctx context.Context, request upstreamRequest, proxyURL
 			live.Close()
 			return nil, err
 		}
+		// 流首块 JSON 错误检测（借鉴 opencode-free-proxy）：opencode 上游
+		// 限流时可能返回 200 OK + SSE 首行内嵌 {"error":{...FreeUsageLimitError...}}，
+		// 绕过 HTTP 429 判定。此处识别后转为可重试错误响应，出口坐板凳、
+		// 竞速/吸收换下一出口，客户端不会拿到一条含诡异 JSON 的流。
+		if prefixFreeUsageLimitError(prefix) {
+			body, _ := live.readAll(request.deadline)
+			full := append(append([]byte{}, prefix...), body...)
+			live.Close()
+			garbageBase := request.upstream
+			if garbageBase == "" {
+				garbageBase = g.cfg.project.upstream
+			}
+			log.Printf("[限流] %s 流首块 JSON 错误（200 OK + 内嵌 FreeUsageLimitError），转为 429 记账",
+				shortUpstream(garbageBase))
+			return &gatewayResponse{status: http.StatusTooManyRequests, header: header, body: full}, nil
+		}
 		live.response.Body = &prefixedBody{prefix: prefix, src: live.response.Body}
 		return &gatewayResponse{status: status, header: header, live: live, origin: &request}, nil
 	}
@@ -1414,6 +1482,26 @@ func (g *gateway) perform(ctx context.Context, request upstreamRequest, proxyURL
 		return nil, err
 	}
 	return &gatewayResponse{status: status, header: header, body: body}, nil
+}
+
+// prefixFreeUsageLimitError 判定流式响应的首段字节是否内嵌了上游限流错误。
+// opencode 上游限流时可能返回 200 OK + SSE 首行内嵌 FreeUsageLimitError
+// 而非 HTTP 429，绕过错峰重试判定。此处只查首段（验证门预读范围），
+// 识别到即按限流记账换道，不把异常 JSON 转发给客户端。
+func prefixFreeUsageLimitError(prefix []byte) bool {
+	if len(prefix) == 0 {
+		return false
+	}
+	lower := bytes.ToLower(prefix)
+	if !bytes.Contains(lower, []byte("freeusagelimiterror")) {
+		return false
+	}
+	// 确认是 error 上下文里的 quota 语义（错误 JSON 通常含 "error" 键），
+	// 防止误伤正常文本内容里恰好出现的同名字符串。
+	if !bytes.Contains(lower, []byte(`"error"`)) {
+		return false
+	}
+	return true
 }
 
 // streamHeadPrefixLimit 是验证门最多预读的字节数：读满仍无数据行则按
@@ -1964,6 +2052,13 @@ func (g *gateway) dispatchRace(ctx context.Context, request upstreamRequest, tra
 					cancelInFlight()
 					stopHedge()
 					return nil, res.err
+				}
+				// 竞速输家取消不计（ferro circuitbreaker 错误归因）：赢家
+				// 出现后 cancelInFlight 取消在途请求，输家返回 context.Canceled
+				// 是网关自己的行为，不是 provider 故障，不应计入熔断/降权。
+				if errors.Is(res.err, context.Canceled) {
+					advanceIfSettled()
+					continue
 				}
 				if !res.isDirect && g.punishExit(res.addr, shortUpstream(res.upstream)) {
 					g.noteCustomResult(res.addr, false)

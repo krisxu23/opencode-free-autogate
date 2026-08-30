@@ -414,6 +414,19 @@ func (a *app) handlePost(w http.ResponseWriter, r *http.Request, path string, de
 		cancel()
 	}
 	changed = enhanceRequestBodyPayload(payload, injectCache) || changed
+	// 载荷预检（P2-9，借鉴 kiro payload_guards）：请求体超限时自动裁剪
+	// 最旧历史，避免上游 400 白烧出口尝试。PROXY_PAYLOAD_LIMIT 开启。
+	if limit := a.gateway.cfg.payloadLimit; limit > 0 && payload != nil {
+		if trimPayloadToLimit(payload, limit) {
+			changed = true
+		}
+	}
+	// 消息归一化/修复管线（P2-11，借鉴 kiro converters_core）：默认关，
+	// PROXY_NORMALIZE_MESSAGES=1 开启。仅在遇到严格上游/客户端格式怪异时
+	// 按需打开（opencode 上游对格式宽松，大部分场景不需要）。
+	if a.gateway.cfg.normalizeMessages && payload != nil {
+		changed = normalizeMessages(payload) || changed
+	}
 	if changed {
 		if out, err := json.Marshal(payload); err == nil {
 			body = out
@@ -473,7 +486,9 @@ func (a *app) handlePost(w http.ResponseWriter, r *http.Request, path string, de
 		// 中客户端不再直接收到 503（流式的保活心跳由 sseGuard 负责）。
 		response, err = a.gateway.dispatchAbsorb(r.Context(), request, trace)
 	} else {
-		response, err = a.gateway.dispatch(r.Context(), request, trace)
+		// 模型级 fallback 链：出口耗尽且模型被限流时依次尝试候选模型
+		//（无 fallback 配置时等价于原 dispatch，零开销）。
+		response, err = a.gateway.dispatchModelChain(r.Context(), request, trace)
 	}
 	if guard != nil {
 		guard.Finish()
@@ -714,6 +729,15 @@ func (a *app) collectHeaders(source http.Header) http.Header {
 			result.Add(key, value)
 		}
 	}
+	// x-real-ip 透传（P2-12，借鉴 zen-proxy）：某些代理出口会丢失真实
+	// 客户端 IP，opencode 上游可能按 IP 限流/定位，补上真实地址。
+	if source != nil {
+		if real := source.Get("X-Real-IP"); real != "" {
+			result.Set("X-Real-IP", real)
+		} else if forwarded := source.Get("X-Forwarded-For"); forwarded != "" {
+			result.Set("X-Forwarded-For", forwarded)
+		}
+	}
 	if auth := a.gateway.cfg.project.upstreamAuthorization; auth != "" {
 		result.Set("Authorization", auth)
 	}
@@ -897,7 +921,12 @@ func writeGatewayResponse(w http.ResponseWriter, r *http.Request, response *gate
 			w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		}
 		if w.Header().Get("Cache-Control") == "" {
-			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Cache-Control", "no-cache, no-transform")
+		}
+		// 反代/公网场景禁缓冲（P2-12，借鉴 cc-relay）：nginx/Cloudflare
+		// 默认会整段缓冲流式响应，客户端看到"全出来了才动"。
+		if w.Header().Get("X-Accel-Buffering") == "" {
+			w.Header().Set("X-Accel-Buffering", "no")
 		}
 	}
 	if w.Header().Get("Content-Type") == "" {

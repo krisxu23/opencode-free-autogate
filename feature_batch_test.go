@@ -39,7 +39,7 @@ func TestClassifyUpstreamFailure(t *testing.T) {
 		{"普通 429 不坐板凳", http.StatusTooManyRequests, `{"error":"slow down"}`, "", 0, benchNone},
 		{"5xx 不坐额度板凳", http.StatusBadGateway, `{}`, "", 0, benchNone},
 		{"过短 Retry-After 抬到下限", http.StatusTooManyRequests, `{}`, "3", minQuotaBench, benchAuthoritative},
-		{"超长 Retry-After 封顶", http.StatusTooManyRequests, `{}`, "999999", maxQuotaBench, benchAuthoritative},
+		{"超长 Retry-After 封顶 1h", http.StatusTooManyRequests, `{}`, "999999", maxOpenCodeRetryAfter, benchHeuristic},
 	}
 	for _, tc := range cases {
 		d, src := classifyUpstreamFailure(tc.status, []byte(tc.body), tc.retryAfter)

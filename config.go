@@ -72,6 +72,12 @@ type config struct {
 	holdbackWindow       time.Duration // 提交前缓冲窗口：透传流开头这段时间内截断可静默换道重发（0=关）
 	holdbackBytes        int           // holdback 缓冲字节上限
 	holdbackRetries      int           // holdback 提交前截断的静默重发次数
+	modelFallbacks       []string      // 模型级 fallback 链：出口耗尽且模型被限流时依次尝试的下游模型
+	modelAliases         map[string]string // 客户端模型名别名 → 免费模型名（Codex/Cline 内置名映射）
+	maxRetryAfter        time.Duration // Retry-After 封顶（PROXY_MAX_RETRY_AFTER，默认 1h）
+	payloadLimit         int           // 请求体载荷上限（字节）：超限自动裁剪历史（0=关闭裁剪）
+	absorbCacheTTL       time.Duration // 吸收产物缓存 TTL（PROXY_ABSORB_CACHE_TTL_MS，0=关闭）
+	normalizeMessages    bool          // 消息归一化/修复管线（PROXY_NORMALIZE_MESSAGES，默认关）
 }
 
 func loadConfig(project projectSpec) config {
@@ -145,10 +151,73 @@ func loadConfig(project projectSpec) config {
 		holdbackWindow:       envMilliseconds("PROXY_HOLDBACK_MS", 1000),
 		holdbackBytes:        envInt("PROXY_HOLDBACK_BYTES", 65536),
 		holdbackRetries:      nonNegative(envInt("PROXY_HOLDBACK_RETRIES", 2)),
+		modelFallbacks:       parseModelFallbacks(os.Getenv("PROXY_MODEL_FALLBACKS")),
+		modelAliases:         parseModelAliases(os.Getenv("PROXY_MODEL_ALIASES")),
+		maxRetryAfter:        envMilliseconds("PROXY_MAX_RETRY_AFTER", 0),
+		payloadLimit:         envInt("PROXY_PAYLOAD_LIMIT", 0),
+		absorbCacheTTL:       envMilliseconds("PROXY_ABSORB_CACHE_TTL_MS", 300000),
+		normalizeMessages:    envIsOn(os.Getenv("PROXY_NORMALIZE_MESSAGES")),
+	}
+	// Retry-After 封顶注入包级变量：classifyUpstreamFailure 无 receiver，
+	// 用包变量接收配置，测试可直接改写。
+	if cfg.maxRetryAfter > 0 {
+		maxRetryAfterOverride = cfg.maxRetryAfter
+	} else {
+		maxRetryAfterOverride = maxOpenCodeRetryAfter
 	}
 	// 池的拨号参数在启动阶段一次性注入：键只依赖代理地址——探活即预热竞速连接。
 	sharedTransports.configure(firstByte, tlsInsecure)
 	return cfg
+}
+
+// parseModelFallbacks 解析 PROXY_MODEL_FALLBACKS（逗号分隔的模型名列表），
+// 供模型级 fallback 链使用。空列表返回 nil。
+func parseModelFallbacks(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	seen := make(map[string]struct{})
+	for _, token := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(token)
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+// parseModelAliases 解析 PROXY_MODEL_ALIASES（逗号分隔 客户端名=免费名 对），
+// 供客户端内置模型名（claude-sonnet-4.5 等）映射到可用免费模型。
+// 空列表返回 nil。
+func parseModelAliases(raw string) map[string]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, token := range strings.Split(raw, ",") {
+		pair := strings.SplitN(token, "=", 2)
+		if len(pair) != 2 {
+			continue
+		}
+		alias := strings.TrimSpace(pair[0])
+		target := strings.TrimSpace(pair[1])
+		if alias == "" || target == "" {
+			continue
+		}
+		out[alias] = target
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // envOrDefault 返回环境变量值，为空时返回默认值。

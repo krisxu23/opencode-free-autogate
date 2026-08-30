@@ -35,8 +35,20 @@ func streamComplete(data []byte) bool {
 type absorbDispatcher func(context.Context, upstreamRequest, *requestTrace) (*gatewayResponse, error)
 
 // dispatchAbsorb 是吸收模式入口：handlePost 对开启该功能的流式请求改走这里。
+// 内部调度使用 dispatchModelChain：模型级限流时换模型继续吸收，而不是
+// 傻等同一模型的额度恢复（限流风暴场景下换模型是唯一出路）。
+// 吸收产物缓存（P2-10，借鉴 ferro responsecache）：命中时直接回放完整
+// 响应体，省一次上游调用与免费额度。
 func (g *gateway) dispatchAbsorb(ctx context.Context, request upstreamRequest, trace *requestTrace) (*gatewayResponse, error) {
-	return g.dispatchAbsorbWith(ctx, request, trace, g.dispatch)
+	// 查缓存：仅在吸收已开启时生效，缓存层不关心 stream 形态。
+	if cached := g.lookupAbsorbResult(request); cached != nil {
+		return cached, nil
+	}
+	resp, err := g.dispatchAbsorbWith(ctx, request, trace, g.dispatchModelChain)
+	if err == nil && resp != nil && resp.live == nil {
+		g.storeAbsorbResult(request, resp)
+	}
+	return resp, err
 }
 
 // dispatchAbsorbWith 反复调用 dispatch 直到拿到完整流或耗尽尝试/预算：
