@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"math/rand"
+	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,7 +50,7 @@ func (g *gateway) startDeepProber(ctx context.Context) {
 				case <-ctx.Done():
 					return
 				case s := <-g.deepQueue:
-					ok, hard := g.deepProbeOne(ctx, s)
+					ok, hard := g.deepProbeDedup(ctx, s)
 					g.settleDeep(s, ok, hard)
 				}
 			}
@@ -132,7 +134,7 @@ func (g *gateway) runDeepProbePass(ctx context.Context) {
 					return
 				default:
 				}
-				ok, hard := g.deepProbeOne(ctx, candidate)
+				ok, hard := g.deepProbeDedup(ctx, candidate)
 				g.settleDeep(candidate, ok, hard)
 				mu.Lock()
 				if ok {
@@ -156,4 +158,96 @@ func (g *gateway) runDeepProbePass(ctx context.Context) {
 	close(work)
 	wg.Wait()
 	log.Printf("[深检] 本轮 %d 个出口：通过 %d / 受限或失败 %d", alive+dead, alive, dead)
+}
+
+// slotExitIP 返回节点出口的真实 IP（高级映射节点经 sing-box 反查原始服务器）：
+// 深检按出口 IP 聚合去重——同一出口 IP 的多个端口节点只打一次 chat 深检，
+// 结果共享给同 IP 的全部节点（按 IP 计额度的上游，同 IP 每端口各打一次 =
+// 同一 IP 被重复烧额度，曾实测同 IP 40+ 端口被深检轰炸打爆额度）。
+// 反查失败的本地映射节点返回空（不去重）：127.0.0.1 是 sing-box 本地入口，
+// 不能作为出口 IP 去重键——否则全部高级节点会被误当成同一个出口。
+func (g *gateway) slotExitIP(s slot) string {
+	if s.proxyURL == nil {
+		return "" // 直连无出口 IP 概念
+	}
+	host := s.proxyURL.Hostname()
+	if host == "" {
+		return ""
+	}
+	// 高级映射节点：本地地址 127.0.0.1:port，反查原始服务器。
+	if strings.HasPrefix(host, "127.") || host == "localhost" || host == "::1" {
+		if origin := g.advOriginHost(s.addr); origin != "" {
+			if h, _, err := net.SplitHostPort(origin); err == nil {
+				return h
+			}
+			return origin
+		}
+		return "" // 反查失败：无法确定出口 IP，不去重
+	}
+	return host
+}
+
+// deepProbeIPCache 深检按出口 IP 的去重缓存：同一 IP 一次深检，TTL 内
+// 结果共享。key = 出口 IP。
+type deepProbeIPCache struct {
+	mu      sync.Mutex
+	entries map[string]deepProbeIPEntry
+	now     func() time.Time
+}
+
+type deepProbeIPEntry struct {
+	ok   bool
+	hard bool // 硬失败（连不通）：只淘汰代表节点，不共享给同 IP 其他节点
+	at   time.Time
+}
+
+// deepProbeDedupTTL 是去重结果的共享窗口：与深检间隔同量级，窗口内
+// 同 IP 不再重复烧配额；窗口外允许重新检测（额度可能已恢复）。
+const deepProbeDedupTTL = 30 * time.Minute
+
+func newDeepProbeIPCache() *deepProbeIPCache {
+	return &deepProbeIPCache{entries: make(map[string]deepProbeIPEntry), now: time.Now}
+}
+
+// lookup 返回同 IP 的可共享结果（ok=true 或软失败）。硬失败不共享。
+func (c *deepProbeIPCache) lookup(ip string) (ok bool, shareable bool) {
+	if ip == "" {
+		return false, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, exists := c.entries[ip]
+	if !exists || c.now().Sub(e.at) > deepProbeDedupTTL {
+		return false, false
+	}
+	if e.hard {
+		return false, false // 硬失败仅代表该端口，不共享
+	}
+	return e.ok, true
+}
+
+// store 记录一次深检结果。
+func (c *deepProbeIPCache) store(ip string, ok, hard bool) {
+	if ip == "" {
+		return
+	}
+	c.mu.Lock()
+	c.entries[ip] = deepProbeIPEntry{ok: ok, hard: hard, at: c.now()}
+	c.mu.Unlock()
+}
+
+// deepProbeDedup 按出口 IP 聚合去重的深检入口：同 IP 已有可共享结果则
+// 直接复用（不烧上游配额）；否则打一次并记录。返回 (ok, hardFail)。
+func (g *gateway) deepProbeDedup(ctx context.Context, s slot) (bool, bool) {
+	ip := g.slotExitIP(s)
+	if ip != "" {
+		if ok, share := g.deepDedup.lookup(ip); share {
+			return ok, false
+		}
+	}
+	ok, hard := g.deepProbeOne(ctx, s)
+	if ip != "" {
+		g.deepDedup.store(ip, ok, hard)
+	}
+	return ok, hard
 }

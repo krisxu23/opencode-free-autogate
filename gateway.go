@@ -239,6 +239,8 @@ type gateway struct {
 
 	deepQueue chan slot // 流式复检队列：初检一通过立即入队深检（见 deepprobe.go）
 
+	deepDedup *deepProbeIPCache // 深检按出口 IP 聚合去重：同 IP 只打一次 chat 深检
+
 	freshMu     sync.Mutex
 	freshPassed map[string]slot // 初检过关待复检的内部池：不参与竞速、界面不显示，复检通过才转正
 
@@ -267,6 +269,7 @@ func newGateway(cfg config) *gateway {
 		freshPassed: make(map[string]slot),
 		sticky:      make(map[string]stickyEntry),
 		modelHealth: newModelHealthTracker(),
+		deepDedup:  newDeepProbeIPCache(),
 	}
 	if cfg.absorbCacheTTL > 0 {
 		g.absorbCache = newAbsorbCache(cfg.absorbCacheTTL)
@@ -1462,7 +1465,7 @@ func (g *gateway) perform(ctx context.Context, request upstreamRequest, proxyURL
 		// 限流时可能返回 200 OK + SSE 首行内嵌 {"error":{...FreeUsageLimitError...}}，
 		// 绕过 HTTP 429 判定。此处识别后转为可重试错误响应，出口坐板凳、
 		// 竞速/吸收换下一出口，客户端不会拿到一条含诡异 JSON 的流。
-		if prefixFreeUsageLimitError(prefix) {
+		if errStatus, isErr := firstDataError(prefix); isErr {
 			body, _ := live.readAll(request.deadline)
 			full := append(append([]byte{}, prefix...), body...)
 			live.Close()
@@ -1470,9 +1473,11 @@ func (g *gateway) perform(ctx context.Context, request upstreamRequest, proxyURL
 			if garbageBase == "" {
 				garbageBase = g.cfg.project.upstream
 			}
-			log.Printf("[限流] %s 流首块 JSON 错误（200 OK + 内嵌 FreeUsageLimitError），转为 429 记账",
-				shortUpstream(garbageBase))
-			return &gatewayResponse{status: http.StatusTooManyRequests, header: header, body: full}, nil
+			// 200 OK + 错误首块：FreeUsageLimitError 视为限流（429 记账坐板凳），
+			// 其余上游错误按 502 换下一出口（不坐额度板凳，可能是模型/参数问题）。
+			log.Printf("[形态] %s 流首块 JSON 错误（200 OK + 内嵌 error），按 %d 换道",
+				shortUpstream(garbageBase), errStatus)
+			return &gatewayResponse{status: errStatus, header: header, body: full}, nil
 		}
 		live.response.Body = &prefixedBody{prefix: prefix, src: live.response.Body}
 		return &gatewayResponse{status: status, header: header, live: live, origin: &request}, nil
@@ -1484,24 +1489,29 @@ func (g *gateway) perform(ctx context.Context, request upstreamRequest, proxyURL
 	return &gatewayResponse{status: status, header: header, body: body}, nil
 }
 
-// prefixFreeUsageLimitError 判定流式响应的首段字节是否内嵌了上游限流错误。
-// opencode 上游限流时可能返回 200 OK + SSE 首行内嵌 FreeUsageLimitError
-// 而非 HTTP 429，绕过错峰重试判定。此处只查首段（验证门预读范围），
-// 识别到即按限流记账换道，不把异常 JSON 转发给客户端。
-func prefixFreeUsageLimitError(prefix []byte) bool {
-	if len(prefix) == 0 {
-		return false
-	}
+// firstDataError 检查流首段字节里的 SSE data 行是否携带 "error" 键。
+// opencode 上游限流时可能返回 200 OK + 首块内嵌 {"error":{...}} 而非
+// HTTP 429；正常 chat 流的首块是 role/delta 块，不含 error 键，不会误判。
+// 返回 (建议状态码, 是否错误)：含 FreeUsageLimitError 视为限流 429，
+// 其余上游错误按 502 换出口（不坐额度板凳，可能是模型/参数问题）。
+// 半行 data（validateStreamHead 只读到 "data:" 前缀）也能命中——只要
+// 该行已含 "error" 字样。
+func firstDataError(prefix []byte) (int, bool) {
 	lower := bytes.ToLower(prefix)
-	if !bytes.Contains(lower, []byte("freeusagelimiterror")) {
-		return false
+	for _, line := range bytes.Split(prefix, []byte("\n")) {
+		if !bytes.Contains(line, []byte(`"error"`)) {
+			continue
+		}
+		trimmed := bytes.TrimSpace(line)
+		if !bytes.HasPrefix(trimmed, []byte("data:")) {
+			continue // 非 data 行里的 error 字样（如注释/event 行）不判定
+		}
+		if bytes.Contains(lower, []byte("freeusagelimiterror")) {
+			return http.StatusTooManyRequests, true
+		}
+		return http.StatusBadGateway, true
 	}
-	// 确认是 error 上下文里的 quota 语义（错误 JSON 通常含 "error" 键），
-	// 防止误伤正常文本内容里恰好出现的同名字符串。
-	if !bytes.Contains(lower, []byte(`"error"`)) {
-		return false
-	}
-	return true
+	return 0, false
 }
 
 // streamHeadPrefixLimit 是验证门最多预读的字节数：读满仍无数据行则按

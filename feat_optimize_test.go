@@ -13,21 +13,25 @@ import (
 
 // ── P0-1: 流首块 JSON 错误拦截 ─────────────────────────────────────────────
 
-func TestPrefixFreeUsageLimitError(t *testing.T) {
+func TestFirstDataError(t *testing.T) {
 	cases := []struct {
-		name string
-		in   string
-		want bool
+		name   string
+		in     string
+		want   bool
+		status int
 	}{
-		{"200+内嵌 quota", `data: {"error":{"message":"FreeUsageLimitError: monthly limit"}}`, true},
-		{"小写", `data: {"error":{"message":"freeusagelimiterror"}}`, true},
-		{"无 error 键不算", `data: {"message":"FreeUsageLimitError"}`, false},
-		{"正常内容", `data: {"choices":[{"delta":{"content":"hi"}}]}`, false},
-		{"空", ``, false},
+		{"200+内嵌 quota", `data: {"error":{"message":"FreeUsageLimitError: monthly limit"}}`, true, http.StatusTooManyRequests},
+		{"小写", `data: {"error":{"message":"freeusagelimiterror"}}`, true, http.StatusTooManyRequests},
+		{"普通错误非 quota", `data: {"error":{"message":"rate limit exceeded"}}`, true, http.StatusBadGateway},
+		{"无 error 键不算", `data: {"message":"FreeUsageLimitError"}`, false, 0},
+		{"正常内容", `data: {"choices":[{"delta":{"content":"hi"}}]}`, false, 0},
+		{"空白 data", `data: [DONE]`, false, 0},
+		{"空", ``, false, 0},
 	}
 	for _, c := range cases {
-		if got := prefixFreeUsageLimitError([]byte(c.in)); got != c.want {
-			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		status, isErr := firstDataError([]byte(c.in))
+		if isErr != c.want || status != c.status {
+			t.Errorf("%s: isErr=%v (want %v) status=%d (want %d)", c.name, isErr, c.want, status, c.status)
 		}
 	}
 }
