@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -53,7 +54,7 @@ type gatewayUI struct {
 	headlineColor     walk.Color
 	titleText         string
 	modelsEdit        *walk.TextEdit
-	logEdit           *walk.TextEdit
+	logList           *walk.ListBox
 	proxyEdit         *walk.TextEdit
 	mirrorEdit        *walk.TextEdit
 	poolCheck         *walk.CheckBox
@@ -85,7 +86,6 @@ type gatewayUI struct {
 	outboundBox       *walk.ComboBox
 	logCursor         int
 	modelsSeen        string
-	shownText         string
 	poolLiveText      string
 	statusText        string
 	shutdownOnce      func()
@@ -457,14 +457,10 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 						Title:  "实时日志",
 						Layout: dcl.VBox{Spacing: 6},
 						Children: []dcl.Widget{
-							dcl.TextEdit{
-								AssignTo:  &ui.logEdit,
-								ReadOnly:  true,
-								VScroll:   true,
-								HScroll:   true,
-								MaxLength: 200000,
-								MinSize:   dcl.Size{Height: 320},
-								Font:      monoFont,
+							dcl.ListBox{
+								AssignTo: &ui.logList,
+								Font:     monoFont,
+								MinSize:  dcl.Size{Height: 320},
 							},
 						},
 					},
@@ -473,6 +469,11 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 		},
 	}).Create(); err != nil {
 		return err
+	}
+
+	// 日志列表允许横向滚动：ListBox 需显式设置水平滚动范围才会出现横向滚动条。
+	if ui.logList != nil {
+		win.SendMessage(ui.logList.Handle(), win.LB_SETHORIZONTALEXTENT, uintptr(3000), 0)
 	}
 
 	// 窗口 chrome 现代化：深色标题栏跟随系统；Win11 上标题栏染色 + Mica（静默降级）。
@@ -728,56 +729,68 @@ func (ui *gatewayUI) refreshPoolLive() {
 //
 // 闪烁的根源是 WM_SETREDRAW(1) 让系统整窗失效并擦白底再画；因此最后用
 // RDW_NOERASE 同步重绘一次，只画文字不擦背景，杜绝每拍一次的白底闪烁。
+// logListMax 日志列表最大行数，超出从头部删除最旧行（低频裁剪）。
+const logListMax = 3000
+
+// pumpLogs 逐行增量刷新日志列表。
+//
+// 换用 ListBox + LB_ADDSTRING 的根本原因（借鉴 OmniRoute 前端逐条 DOM 渲染
+// 的思路）：标准 EDIT 是"大文本块"，任何文本变化都要整块重排重绘，无论怎么
+// 增量插入/无擦重绘都必然闪烁；而 ListBox 每行独立，追加新行时系统只重绘
+// 新增行的区域，已有行纹丝不动，天然零闪烁。
+//
+// 滚动跟随语义与 OmniRoute 的 autoScroll 一致：
+//   - 用户在底部（跟随模式）：新行追加后滚到最新一行，始终看到最新日志；
+//   - 用户已上滚查看旧日志：只追加、不滚动，当前视口完全不动。
 func (ui *gatewayUI) pumpLogs() {
 	lines, cursor := uiLog.Since(ui.logCursor)
 	if len(lines) == 0 {
-		return // 无新行早退（freellmapi bail-out），不碰控件
+		return // 无新行早退（bail-out），不碰控件
 	}
 	ui.logCursor = cursor
-	newText := strings.Join(lines, "\r\n")
-	hwnd := ui.logEdit.Handle()
+	hwnd := ui.logList.Handle()
 
-	// 目标可视行：停在顶部（==0）跟随最新日志保持顶端；已向下滚动则内容
-	// 整体下移 len(lines) 行，目标 = 原位置 + len(lines)，同屏内容不变。
-	oldVisible := int(win.SendMessage(hwnd, win.EM_GETFIRSTVISIBLELINE, 0, 0))
-	desired := 0
-	if oldVisible > 0 {
-		desired = oldVisible + len(lines)
+	// 记录是否处于"跟随最新"状态：首个可见行 + 可视行数 >= 总行数 - 1。
+	count := int(win.SendMessage(hwnd, win.LB_GETCOUNT, 0, 0))
+	top := int(win.SendMessage(hwnd, win.LB_GETTOPINDEX, 0, 0))
+	atBottom := count == 0 || top+ui.logVisibleLines() >= count-1
+
+	// 逐行追加：LB_ADDSTRING 只重绘新增行区域。
+	for _, line := range lines {
+		p := syscall.StringToUTF16Ptr(line)
+		win.SendMessage(hwnd, win.LB_ADDSTRING, 0, uintptr(unsafe.Pointer(p)))
 	}
 
-	win.SendMessage(hwnd, win.WM_SETREDRAW, 0, 0)
-	if ui.shownText == "" {
-		// 首次：全量设置
-		ui.shownText = newText
-		ui.logEdit.SetText(ui.shownText)
-	} else if len(ui.shownText)+len(newText)+2 <= 80000 {
-		// 增量插入到开头（取代全量 SetText，避免闪烁）：EM_REPLACESEL 在
-		// ReadOnly 控件上不工作，临时取消只读、插入后恢复。
-		ui.shownText = newText + "\r\n" + ui.shownText
-		_ = ui.logEdit.SetReadOnly(false)
-		ui.logEdit.SetTextSelection(0, 0)
-		ui.logEdit.ReplaceSelectedText(newText+"\r\n", false)
-		_ = ui.logEdit.SetReadOnly(true)
-	} else {
-		// 超限：全量重建（低频，仅每 8 万字符一次，此时闪一下可接受）
-		ui.shownText = newText + "\r\n" + ui.shownText
-		if len(ui.shownText) > 80000 {
-			ui.shownText = ui.shownText[:50000]
+	// 行数上限：从头部删除最旧的行（仅在超限时，低频）。
+	for n := int(win.SendMessage(hwnd, win.LB_GETCOUNT, 0, 0)); n > logListMax; n-- {
+		win.SendMessage(hwnd, win.LB_DELETESTRING, 0, 0)
+	}
+
+	// 跟随模式：滚到最新一行（让最后一项成为可视区最后一行）。
+	if atBottom {
+		if n := int(win.SendMessage(hwnd, win.LB_GETCOUNT, 0, 0)); n > 0 {
+			top := n - ui.logVisibleLines()
+			if top < 0 {
+				top = 0
+			}
+			win.SendMessage(hwnd, win.LB_SETTOPINDEX, uintptr(top), 0)
 		}
-		ui.logEdit.SetText(ui.shownText)
 	}
+}
 
-	// EM_LINESCROLL 是相对滚动，先读修改后的实际位置，用差值归位；负值向上
-	// 滚。EM_SETSEL/SetText 都可能把可视行重置到 0，直接传目标行会叠加翻倍。
-	cur := int(win.SendMessage(hwnd, win.EM_GETFIRSTVISIBLELINE, 0, 0))
-	if delta := desired - cur; delta != 0 {
-		win.SendMessage(hwnd, win.EM_LINESCROLL, 0, uintptr(int(delta)))
+// logVisibleLines 估算 ListBox 可视行数，用于"是否在底部"的判断。
+func (ui *gatewayUI) logVisibleLines() int {
+	hwnd := ui.logList.Handle()
+	var rc win.RECT
+	win.GetClientRect(hwnd, &rc)
+	h := int(rc.Bottom - rc.Top)
+	var ir win.RECT
+	if win.SendMessage(hwnd, win.LB_GETITEMRECT, 0, uintptr(unsafe.Pointer(&ir))) != 0 {
+		if ih := int(ir.Bottom - ir.Top); ih > 0 && h > 0 {
+			return h / ih
+		}
 	}
-	win.SendMessage(hwnd, win.WM_SETREDRAW, 1, 0)
-	// WM_SETREDRAW(1) 会使整窗失效并擦白底再画，正是每拍白闪的根源。
-	// 改用 RDW_NOERASE 同步重绘一次：只画文字不擦背景，杜绝闪烁；
-	// RDW_UPDATENOW 立即完成绘制并校验区域，系统不会再补发 WM_PAINT。
-	win.RedrawWindow(hwnd, nil, 0, win.RDW_INVALIDATE|win.RDW_NOERASE|win.RDW_UPDATENOW)
+	return 20 // 兜底：拿不到行高时按 20 行估算
 }
 
 func (ui *gatewayUI) refreshStatus() {
