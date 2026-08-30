@@ -709,39 +709,20 @@ func (ui *gatewayUI) refreshPoolLive() {
 	ui.poolLive.SetText(text)
 }
 
-// pumpLogs 增量刷新日志文本，同时保持用户当前的滚动位置。
-//
-// 借鉴 freellmapi mergeEntries 增量追加 + 无新行早退：无新行时不碰控件
-// （bail-out），有新行时在文本顶部增量插入（EM_REPLACESEL）而非全量替换
-// （SetText），避免每 300ms 全量重排导致的闪烁。仅在超限时降级全量重建。
-//
-// 滚动位置归位的关键：walk 的 TextEdit 是标准 "EDIT" 控件，不支持 RichEdit
-// 的 EM_GETSCROLLPOS/EM_SETSCROLLPOS（发过去被静默忽略，这是前几次修复无效
-// 的原因），标准 EDIT 只认按行的 EM_GETFIRSTVISIBLELINE / EM_LINESCROLL。
-// 而 EM_LINESCROLL 是相对滚动（从当前位置再滚 delta 行），绝不能当绝对定位
-// 用：修改文本后必须重新读一次实际位置，用差值归位，否则增量路径下位置每拍
-// 叠加翻倍、几拍后就被冲到最底部（"一离开顶端就被拉到底"的根因）。
-//
-// 目标位置分两种情形：
-//   - 停在顶部（oldVisible==0）：跟随最新日志，目标仍为第 0 行；
-//   - 已向下滚动：新日志插在最前使原内容整体下移 len(lines) 行，目标 =
-//     oldVisible + len(lines)，用户看的那一段纹丝不动。
-//
-// 闪烁的根源是 WM_SETREDRAW(1) 让系统整窗失效并擦白底再画；因此最后用
-// RDW_NOERASE 同步重绘一次，只画文字不擦背景，杜绝每拍一次的白底闪烁。
-// logListMax 日志列表最大行数，超出从头部删除最旧行（低频裁剪）。
+// logListMax 日志列表最大行数，超出从尾部删除最旧行（低频裁剪）。
 const logListMax = 3000
 
-// pumpLogs 逐行增量刷新日志列表。
+// pumpLogs 逐行增量刷新日志列表，最新日志显示在最顶端（倒序展示）。
 //
-// 换用 ListBox + LB_ADDSTRING 的根本原因（借鉴 OmniRoute 前端逐条 DOM 渲染
+// 换用 ListBox + LB_INSERTSTRING 的根本原因（借鉴 OmniRoute 前端逐条 DOM 渲染
 // 的思路）：标准 EDIT 是"大文本块"，任何文本变化都要整块重排重绘，无论怎么
-// 增量插入/无擦重绘都必然闪烁；而 ListBox 每行独立，追加新行时系统只重绘
+// 增量插入/无擦重绘都必然闪烁；而 ListBox 每行独立，插入新行时系统只重绘
 // 新增行的区域，已有行纹丝不动，天然零闪烁。
 //
-// 滚动跟随语义与 OmniRoute 的 autoScroll 一致：
-//   - 用户在底部（跟随模式）：新行追加后滚到最新一行，始终看到最新日志；
-//   - 用户已上滚查看旧日志：只追加、不滚动，当前视口完全不动。
+// 跟随语义：
+//   - 停在顶部（跟随模式）：新日志插入在顶部，用户看到的始终是最新日志；
+//   - 已向下滚动查看旧日志：插入后把视口下移 len(lines) 行补回原位，
+//     当前看的那一段纹丝不动。
 func (ui *gatewayUI) pumpLogs() {
 	lines, cursor := uiLog.Since(ui.logCursor)
 	if len(lines) == 0 {
@@ -750,47 +731,27 @@ func (ui *gatewayUI) pumpLogs() {
 	ui.logCursor = cursor
 	hwnd := ui.logList.Handle()
 
-	// 记录是否处于"跟随最新"状态：首个可见行 + 可视行数 >= 总行数 - 1。
-	count := int(win.SendMessage(hwnd, win.LB_GETCOUNT, 0, 0))
+	// 记录插入前视口位置：top==0 表示停在顶部跟随最新。
 	top := int(win.SendMessage(hwnd, win.LB_GETTOPINDEX, 0, 0))
-	atBottom := count == 0 || top+ui.logVisibleLines() >= count-1
+	follow := top == 0
 
-	// 逐行追加：LB_ADDSTRING 只重绘新增行区域。
-	for _, line := range lines {
-		p := syscall.StringToUTF16Ptr(line)
-		win.SendMessage(hwnd, win.LB_ADDSTRING, 0, uintptr(unsafe.Pointer(p)))
+	// 逐行插入到顶部：从后往前插，批内保持原序（新批整体在最上、批内正序，
+	// 与旧版倒序展示一致）。LB_INSERTSTRING 只重绘新增行区域。
+	for i := len(lines) - 1; i >= 0; i-- {
+		p := syscall.StringToUTF16Ptr(lines[i])
+		win.SendMessage(hwnd, win.LB_INSERTSTRING, 0, uintptr(unsafe.Pointer(p)))
 	}
 
-	// 行数上限：从头部删除最旧的行（仅在超限时，低频）。
+	// 行数上限：从尾部删除最旧的行（仅在超限时，低频）。
 	for n := int(win.SendMessage(hwnd, win.LB_GETCOUNT, 0, 0)); n > logListMax; n-- {
-		win.SendMessage(hwnd, win.LB_DELETESTRING, 0, 0)
+		win.SendMessage(hwnd, win.LB_DELETESTRING, uintptr(n-1), 0)
 	}
 
-	// 跟随模式：滚到最新一行（让最后一项成为可视区最后一行）。
-	if atBottom {
-		if n := int(win.SendMessage(hwnd, win.LB_GETCOUNT, 0, 0)); n > 0 {
-			top := n - ui.logVisibleLines()
-			if top < 0 {
-				top = 0
-			}
-			win.SendMessage(hwnd, win.LB_SETTOPINDEX, uintptr(top), 0)
-		}
+	// 已下滚：内容整体下移 len(lines) 行，视口补回原位（SETTOPINDEX 自动
+	// 夹紧到有效范围，裁剪掉尾部旧行也不会越界）。
+	if !follow && len(lines) > 0 {
+		win.SendMessage(hwnd, win.LB_SETTOPINDEX, uintptr(top+len(lines)), 0)
 	}
-}
-
-// logVisibleLines 估算 ListBox 可视行数，用于"是否在底部"的判断。
-func (ui *gatewayUI) logVisibleLines() int {
-	hwnd := ui.logList.Handle()
-	var rc win.RECT
-	win.GetClientRect(hwnd, &rc)
-	h := int(rc.Bottom - rc.Top)
-	var ir win.RECT
-	if win.SendMessage(hwnd, win.LB_GETITEMRECT, 0, uintptr(unsafe.Pointer(&ir))) != 0 {
-		if ih := int(ir.Bottom - ir.Top); ih > 0 && h > 0 {
-			return h / ih
-		}
-	}
-	return 20 // 兜底：拿不到行高时按 20 行估算
 }
 
 func (ui *gatewayUI) refreshStatus() {
