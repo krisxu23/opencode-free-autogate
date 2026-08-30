@@ -66,7 +66,12 @@ type config struct {
 	transportDialTimeout time.Duration // 共享连接池统一的拨号/TLS 握手超时（随首字节超时初始化）
 	opencodePoolOff      bool          // OpenCode 供应商禁用节点池出口（零值 false = 走池，测试/旧配置零回归）
 	clinePoolEnabled     bool          // Cline 供应商节点池出口开关（默认关：直连）
+	cfFallbackURL        string        // 稳定锚点：Cloudflare Worker（ai-gateway）地址，全池耗尽后借道交付
+	cfFallbackKey        string        // 稳定锚点的代理 Key（Worker 管理面板创建）
 	preferredRegions     string        // 地区偏好（逗号分隔国家码 US,JP,SG；空 = 不偏好）
+	holdbackWindow       time.Duration // 提交前缓冲窗口：透传流开头这段时间内截断可静默换道重发（0=关）
+	holdbackBytes        int           // holdback 缓冲字节上限
+	holdbackRetries      int           // holdback 提交前截断的静默重发次数
 }
 
 func loadConfig(project projectSpec) config {
@@ -134,7 +139,12 @@ func loadConfig(project projectSpec) config {
 		transportDialTimeout: firstByte,
 		opencodePoolOff:      !envDefaultOn("PROXY_POOL_OPENCODE"),
 		clinePoolEnabled:     envIsOn(os.Getenv("PROXY_POOL_CLINE")),
+		cfFallbackURL:        envString("CF_FALLBACK_URL", ""),
+		cfFallbackKey:        os.Getenv("CF_FALLBACK_KEY"),
 		preferredRegions:     envString("PROXY_PREFERRED_REGIONS", ""),
+		holdbackWindow:       envMilliseconds("PROXY_HOLDBACK_MS", 1000),
+		holdbackBytes:        envInt("PROXY_HOLDBACK_BYTES", 65536),
+		holdbackRetries:      nonNegative(envInt("PROXY_HOLDBACK_RETRIES", 2)),
 	}
 	// 池的拨号参数在启动阶段一次性注入：键只依赖代理地址——探活即预热竞速连接。
 	sharedTransports.configure(firstByte, tlsInsecure)
@@ -178,6 +188,16 @@ func envIsOn(raw string) bool {
 
 // orderedLayers 返回代理层的调度顺序。显式配置 PROXY_ORDER 时优先，
 // 否则按 PROXY_MODE 使用原有的固定顺序；直连始终作为最后兜底，不参与排序。
+// holdbackConfig 返回提交前缓冲的生效配置：窗口与字节上限都为正时才启用。
+func (c config) holdbackConfig() holdbackConfig {
+	return holdbackConfig{
+		enabled:  c.holdbackWindow > 0 && c.holdbackBytes > 0,
+		window:   c.holdbackWindow,
+		maxBytes: c.holdbackBytes,
+		retries:  c.holdbackRetries,
+	}
+}
+
 func (c config) orderedLayers() []string {
 	if len(c.proxyOrder) > 0 {
 		return c.proxyOrder

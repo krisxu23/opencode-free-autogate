@@ -57,12 +57,12 @@ type requestTrace struct {
 	finalProxy     string
 	finalStatus    int
 	upstream       string
-	winnerUpstream string         // 竞速赢家实际使用的上游基址（完整 URL），供镜像记账
-	tag            string         // 日志关联标签（会话短标识）：并发请求/竞速尝试靠它归属
+	winnerUpstream string              // 竞速赢家实际使用的上游基址（完整 URL），供镜像记账
+	tag            string              // 日志关联标签（会话短标识）：并发请求/竞速尝试靠它归属
 	triedExits     map[string]struct{} // 本请求已尝试过的出口（跨波次/镜像/吸收去重）
-	model          string         // 请求模型（收尾行展示）
-	firstByte      time.Duration  // 响应头到达耗时；未知为 0（收尾行展示）
-	usage          *usageSnapshot // 每请求 token 用量（收尾行展示）
+	model          string              // 请求模型（收尾行展示）
+	firstByte      time.Duration       // 响应头到达耗时；未知为 0（收尾行展示）
+	usage          *usageSnapshot      // 每请求 token 用量（收尾行展示）
 }
 
 // usageSnapshot 是单请求 token 用量快照，供收尾日志展示；日聚合仍走 usageStats。
@@ -678,6 +678,31 @@ func quotaExhausted(body []byte) bool {
 	return bytes.Contains(body, []byte("FreeUsageLimitError"))
 }
 
+// overloadMarkers 是上游过载/容量不足的特征标记（借鉴 FCC failure_policy 的
+// _OVERLOAD_MARKERS：resource exhausted / overloaded / capacity 等）。5xx 响应体
+// 命中这些标记说明出口或上游正处于容量挤兑，短时间反复重试只会放大拥堵，
+// 给出口坐一段推断板凳让队列自然清空，比逐请求重试更有效。
+var overloadMarkers = [][]byte{
+	[]byte("overloaded"),
+	[]byte("overload"),
+	[]byte("resource exhausted"),
+	[]byte("resourceexhausted"),
+	[]byte("capacity"),
+	[]byte("limit reached"),
+	[]byte("busy"),
+}
+
+// overloadedUpstream 判断响应体是否带过载特征。忽略大小写与空白差异。
+func overloadedUpstream(body []byte) bool {
+	lower := bytes.ToLower(body)
+	for _, marker := range overloadMarkers {
+		if bytes.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // parseRetryAfter 解析 Retry-After 头：接受秒数与 RFC-7231 HTTP 日期两种
 // 形式，负值/不可解析返回 0。
 func parseRetryAfter(v string) time.Duration {
@@ -724,9 +749,10 @@ func parseResetHint(body []byte) time.Duration {
 }
 
 const (
-	minQuotaBench  = 30 * time.Second // 短于该值的 Retry-After 没有板凳意义
-	maxQuotaBench  = 24 * time.Hour   // 板凳上限：跨天重置的额度最多等一天
-	creditBenchDur = 24 * time.Hour   // 计费类错误（402）：探活无法证伪充值，直接一天
+	minQuotaBench    = 30 * time.Second // 短于该值的 Retry-After 没有板凳意义
+	maxQuotaBench    = 24 * time.Hour   // 板凳上限：跨天重置的额度最多等一天
+	creditBenchDur   = 24 * time.Hour   // 计费类错误（402）：探活无法证伪充值，直接一天
+	overloadBenchDur = 5 * time.Minute  // 过载/容量挤兑（5xx+特征标记）：推断短板凳
 )
 
 // classifyUpstreamFailure 把上游错误响应翻译成出口板凳策略：
@@ -735,6 +761,14 @@ const (
 func classifyUpstreamFailure(status int, body []byte, retryAfter string) (time.Duration, benchSource) {
 	if status == http.StatusPaymentRequired {
 		return creditBenchDur, benchAuthoritative
+	}
+	if status >= 500 && status <= 599 {
+		// 过载/容量挤兑（529 高发）：短板凳让队列清空，比逐请求重试高效。
+		// 推断值允许深检提前回归——过载是可逆的，探活通过即可复出。
+		if overloadedUpstream(body) {
+			return overloadBenchDur, benchHeuristic
+		}
+		return 0, benchNone
 	}
 	if status != http.StatusTooManyRequests {
 		return 0, benchNone
@@ -1491,6 +1525,18 @@ func (g *gateway) dispatch(ctx context.Context, request upstreamRequest, trace *
 		g.noteUpstreamResult(current.upstream, false)
 		lastResponse = response
 	}
+	// 稳定锚点：免费出口与直连全部耗尽时，借道用户部署的 Cloudflare Worker
+	//（ai-gateway，OpenAI 兼容）兜底——它的网络路径不含免费代理，是全链路里
+	// 唯一不受出口质量影响的通道（fail-open：失败不影响既有兜底语义）。
+	if g.cfg.cfFallbackURL != "" && ctx.Err() == nil && !trace.triedBefore(cfAnchorAddr) {
+		trace.markTried(cfAnchorAddr)
+		trace.addAttempt(cfAnchorAddr)
+		if resp, ok := g.cfFallbackAttempt(ctx, request); ok {
+			trace.finalProxy = "cf-worker"
+			log.Printf("[稳定锚点]%s 借道 Cloudflare Worker 兜底交付（全部上游耗尽）", trace.tagString())
+			return resp, nil
+		}
+	}
 	if lastResponse != nil {
 		return lastResponse, nil
 	}
@@ -2203,12 +2249,126 @@ func (g *gateway) dispatchDirect(ctx context.Context, request upstreamRequest, t
 	trace.addAttempt("direct")
 	log.Printf("[直连]%s directly connecting to upstream", trace.tagString())
 	response, err := g.perform(ctx, request, nil)
+	// 稳定锚点：用户选择直连（不走节点池）时，直连失败借道 Cloudflare
+	// Worker 兜底——本地到 CF anycast 的网络段比直连国际线路稳定，
+	// 这正是"选直连还是断"场景的补网通道（fail-open：锚点失败不影响
+	// 既有兜底语义，可重试状态照旧交还上层）。
+	if (err != nil || retryableStatus(response.status)) && g.cfg.cfFallbackURL != "" && ctx.Err() == nil && !trace.triedBefore(cfAnchorAddr) {
+		trace.markTried(cfAnchorAddr)
+		trace.addAttempt(cfAnchorAddr)
+		if resp, ok := g.cfFallbackAttempt(ctx, request); ok {
+			trace.finalProxy = "cf-worker"
+			log.Printf("[稳定锚点]%s 直连失败，借道 Cloudflare Worker 兜底交付", trace.tagString())
+			return resp, nil
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
 	trace.finalProxy = "direct"
 	trace.noteFirstByte(response)
 	return response, nil
+}
+
+// cfAnchorAddr 是稳定锚点在请求级去重标记里的占位名（不会与真实出口冲突）。
+const cfAnchorAddr = "cf-anchor"
+
+// cfFallbackAttempt 借道用户部署的 Cloudflare Worker（ai-gateway）交付请求。
+// Worker 的 opencode 上游按 提供商ID/模型ID 拆分（parseModelId），因此模型名
+// 补上 opencode/ 前缀；认证走 Worker 管理面板创建的 sk_cf_* 代理 Key。
+// 返回 ok=false 时调用方按既有语义走兜底，不影响任何行为（fail-open）。
+// 复用的是共享连接池里"直连"（proxyURL=nil）的 uTLS transport——本地到
+// Cloudflare anycast 是全程最稳定的网络段。
+func (g *gateway) cfFallbackAttempt(ctx context.Context, request upstreamRequest) (*gatewayResponse, bool) {
+	if g.cfg.cfFallbackURL == "" || g.cfg.cfFallbackKey == "" {
+		return nil, false
+	}
+	deadline := request.deadline
+	if deadline.IsZero() {
+		deadline = time.Now().Add(g.cfg.firstByteTimeout)
+	}
+	wait := g.openTimeouts(deadline, g.cfg.firstByteTimeout)
+	if wait <= 0 {
+		return nil, false
+	}
+
+	// 模型名补 opencode/ 前缀：客户端模型经 rewriteModelPayload 后是上游
+	// 原始 id（big-pickle 等），Worker 需要 提供商ID/模型ID 才能路由。
+	body := request.body
+	payload := parseJSONObject(body)
+	if payload != nil {
+		if model, _ := payload["model"].(string); model != "" && !strings.HasPrefix(model, "opencode/") {
+			payload["model"] = "opencode/" + model
+			if out, err := json.Marshal(payload); err == nil {
+				body = out
+			}
+		}
+	}
+
+	headers := request.headers.Clone()
+	headers.Set("Authorization", "Bearer "+g.cfg.cfFallbackKey)
+	headers.Set("Content-Type", "application/json")
+	headers.Del("X-Api-Key")
+	path := request.path
+	if path == "" {
+		path = "/v1/chat/completions"
+	}
+	fallback := upstreamRequest{
+		method:    http.MethodPost,
+		path:      path,
+		headers:   headers,
+		body:      body,
+		stream:    request.stream,
+		nonStream: request.nonStream,
+		session:   request.session,
+		deadline:  deadline,
+	}
+	// 直连 transport：与 dispatchDirect 共用同一连接池条目。
+	live, err := openHTTP(ctx, http.MethodPost, strings.TrimRight(g.cfg.cfFallbackURL, "/")+path, headers, body, nil, wait)
+	if err != nil {
+		log.Printf("[稳定锚点] CF Worker 请求失败: %v", err)
+		return nil, false
+	}
+	status := live.response.StatusCode
+	header := cloneEndToEndHeaders(live.response.Header)
+	if status >= 400 {
+		ebody, _ := live.readAll(deadline)
+		log.Printf("[稳定锚点] CF Worker 返回 %d: %s", status, firstLine(ebody))
+		live.Close()
+		return nil, false
+	}
+	if fallback.stream && status < 400 {
+		// 流式形态：与 perform 同款验证门，等首段数据确认 Worker 真在响应。
+		if ct := live.response.Header.Get("Content-Type"); ct != "" && !isStreamContentType(ct) {
+			body, _ := live.readAll(deadline)
+			log.Printf("[稳定锚点] CF Worker 返回非流式内容 Content-Type=%q（%d 字节），放弃", ct, len(body))
+			live.Close()
+			return nil, false
+		}
+		prefix, verr := validateStreamHead(ctx, live, deadline)
+		if verr != nil {
+			live.Close()
+			log.Printf("[稳定锚点] CF Worker 首数据验证失败: %v", verr)
+			return nil, false
+		}
+		live.response.Body = &prefixedBody{prefix: prefix, src: live.response.Body}
+		return &gatewayResponse{status: status, header: header, live: live, origin: &fallback}, true
+	}
+	body, err = live.readAll(deadline)
+	if err != nil {
+		log.Printf("[稳定锚点] CF Worker 响应读取失败: %v", err)
+		return nil, false
+	}
+	return &gatewayResponse{status: status, header: header, body: body}, true
+}
+
+// firstLine 取响应体首行用于日志（稳定锚点错误只记摘要，不刷屏）。
+func firstLine(b []byte) string {
+	line, _, _ := bytes.Cut(bytes.TrimSpace(b), []byte("\n"))
+	if len(line) > 300 {
+		line = line[:300]
+	}
+	return string(line)
 }
 
 func (g *gateway) customCount() int {

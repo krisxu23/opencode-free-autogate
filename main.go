@@ -635,10 +635,11 @@ type streamOptions struct {
 	stallMinBytes int
 	observe       func(truncated bool)
 	hyg           *sseSanitizer
-	resumer       *streamResumer // 中流续写；nil 表示不支持续写的形态
-	usage         *usageSnapshot // 每请求 token 用量快照，streamResponse 回填
-	path          string         // 客户端协议路径（/v1/responses 等）：决定保活事件形态
-	keepalive     time.Duration  // 流内保活间隔：上游静默多久注入一次（0=关）
+	resumer       *streamResumer   // 中流续写；nil 表示不支持续写的形态
+	usage         *usageSnapshot   // 每请求 token 用量快照，streamResponse 回填
+	path          string           // 客户端协议路径（/v1/responses 等）：决定保活事件形态
+	keepalive     time.Duration    // 流内保活间隔：上游静默多久注入一次（0=关）
+	holdback      *holdbackRetrier // 提交前缓冲 + 静默重发；nil = 关闭
 }
 
 // writeCommittedStream 处理已提前提交 SSE 头的响应：赢家的流直接透传；
@@ -656,7 +657,8 @@ func writeCommittedStream(w http.ResponseWriter, r *http.Request, response *gate
 		return
 	}
 	if response.live != nil {
-		streamResponse(w, r.Context(), response.live, opts)
+		// 提交前缓冲在 holdback 包装内完成；未启用时直接透传。
+		opts.holdback.writeWithHoldback(w, r.Context(), response.live, opts)
 		return
 	}
 	message := "上游请求失败"
@@ -816,6 +818,18 @@ func (a *app) finish(w http.ResponseWriter, r *http.Request, trace *requestTrace
 	// eligible/resume 内部再做开关、工具调用与预算把关。
 	if response != nil && response.live != nil && response.origin != nil {
 		opts.resumer = newStreamResumer(a.gateway, response.origin, trace)
+		// 提交前缓冲：透传流开头一小段先暂存，截断则静默换道重发——
+		// 客户端在缓冲窗口内看不到任何字节，因此提交前截断无感知。
+		// 任何流式形态都受益（chat/responses/anthropic），无需续写器。
+		hbCfg := a.gateway.cfg.holdbackConfig()
+		if hbCfg.enabled {
+			opts.holdback = &holdbackRetrier{
+				gateway: a.gateway,
+				origin:  response.origin,
+				trace:   trace,
+				cfg:     hbCfg,
+			}
+		}
 	}
 	// 回显取证：胜者响应头脱敏落日志，判断上游是否下发 turn-scoped 状态头。
 	if a.gateway.cfg.echoDebug && response != nil {
@@ -894,7 +908,7 @@ func writeGatewayResponse(w http.ResponseWriter, r *http.Request, response *gate
 		_, _ = w.Write(response.body)
 		return
 	}
-	streamResponse(w, r.Context(), response.live, opts)
+	opts.holdback.writeWithHoldback(w, r.Context(), response.live, opts)
 }
 
 // streamTerminals 是判定流完整结束的标记：见到任一个即认为上游正常收尾。
