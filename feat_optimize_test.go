@@ -36,6 +36,30 @@ func TestFirstDataError(t *testing.T) {
 	}
 }
 
+// ── 空响应拦截（empty_model_response 修复）───────────────────────────────
+
+func TestPrefixEmptyResponse(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"首行即 [DONE]", `data: [DONE]` + "\n\n", true},
+		{"首行空 choices", `data: {"choices":[]}` + "\n\n", true},
+		{"首块 delta 空且无终止", `data: {"choices":[{"delta":{}}]}` + "\n\n", true},
+		{"首块 delta 空但带 finish_reason 是合法收尾", `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n", false},
+		{"正常 role 块", `data: {"choices":[{"delta":{"role":"assistant"}}]}` + "\n\n", false},
+		{"正常内容块", `data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n", false},
+		{"先 usage 后内容", `data: {"usage":{"prompt_tokens":1}}` + "\n\n", false},
+		{"首行是注释后 [DONE]", `: keepalive` + "\n" + `data: [DONE]` + "\n\n", true},
+	}
+	for _, c := range cases {
+		if got := prefixEmptyResponse([]byte(c.in)); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}
+
 // ── P0-2: Retry-After 封顶 ────────────────────────────────────────────────
 
 func TestRetryAfterCap(t *testing.T) {
