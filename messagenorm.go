@@ -175,7 +175,7 @@ func toolCallsText(entry map[string]any) string {
 
 // normalizeOrphanToolResults 修复列表开头的孤儿 toolResult（裁剪或客户端
 // 怪异历史产生）：并入紧随其后的 user 消息，避免上游 400。返回新切片
-//（开头孤儿已移除，内容并入后继 user）。
+// （开头孤儿已移除，内容并入后继 user）。
 func normalizeOrphanToolResults(messages []*normMsg) bool {
 	if len(messages) == 0 || messages[0].role != "tool" {
 		return false

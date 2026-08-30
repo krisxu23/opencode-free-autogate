@@ -458,12 +458,13 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 						Layout: dcl.VBox{Spacing: 6},
 						Children: []dcl.Widget{
 							dcl.TextEdit{
-								AssignTo: &ui.logEdit,
-								ReadOnly: true,
-								VScroll:  true,
-								HScroll:  true,
-								MinSize:  dcl.Size{Height: 320},
-								Font:     monoFont,
+								AssignTo:  &ui.logEdit,
+								ReadOnly:  true,
+								VScroll:   true,
+								HScroll:   true,
+								MaxLength: 200000,
+								MinSize:   dcl.Size{Height: 320},
+								Font:      monoFont,
 							},
 						},
 					},
@@ -709,33 +710,30 @@ func (ui *gatewayUI) refreshPoolLive() {
 
 // pumpLogs 增量刷新日志文本，同时保持用户当前的滚动位置。
 //
+// 借鉴 freellmapi mergeEntries 增量追加 + 无新行早退：无新行时不碰控件
+// （bail-out），有新行时在文本顶部增量插入（EM_REPLACESEL）而非全量替换
+// （SetText），避免每 300ms 全量重排导致的闪烁。仅在超限时降级全量重建。
+//
 // 滚动条与刷新解绑的关键：walk 的 TextEdit 是标准 "EDIT" 控件，不支持
 // RichEdit 的 EM_GETSCROLLPOS/EM_SETSCROLLPOS（发过去被静默忽略，这是前几次
-// 修复无效的原因），也不能用 EM_REPLACESEL（它会把插入符滚进视野，导致跳到
-// 末尾）。标准 EDIT 只认按行的 EM_GETFIRSTVISIBLELINE / EM_LINESCROLL。
+// 修复无效的原因），标准 EDIT 只认按行的 EM_GETFIRSTVISIBLELINE / EM_LINESCROLL。
+// 增量插入用 EM_REPLACESEL（先 EM_SETSEL(0,0) 等价于在开头插入），ReadOnly
+// 下它不生效，需临时取消只读；全程包在 WM_SETREDRAW 0/1 里，最后异步
+// Invalidate 让系统只重绘一次，插入符跳转被 LINESCROLL 复位抵消。
 //
-// 新日志拼在文本最前面，旧内容整体下移 len(lines) 行，因此分两种情形：
+// 新日志插在文本最前面，旧内容整体下移 len(lines) 行，因此分两种情形：
 //   - 停在顶部（firstVisible==0）：跟随最新日志，滚回第 0 行；
 //   - 已向下滚动：加上新增行数滚回等效位置，用户看的那一段纹丝不动。
 func (ui *gatewayUI) pumpLogs() {
 	lines, cursor := uiLog.Since(ui.logCursor)
 	if len(lines) == 0 {
-		return
+		return // 无新行早退（freellmapi bail-out），不碰控件
 	}
 	ui.logCursor = cursor
-	// 最新的日志放最上面（倒序显示），这样新日志出现时不需要滚动。
 	newText := strings.Join(lines, "\r\n")
-	if ui.shownText == "" {
-		ui.shownText = newText
-	} else {
-		ui.shownText = newText + "\r\n" + ui.shownText
-	}
-	// 超长时从尾部（最旧的内容）截断。
-	if len(ui.shownText) > 80000 {
-		ui.shownText = ui.shownText[:50000]
-	}
 	hwnd := ui.logEdit.Handle()
-	// 替换前记下首个可见行；SetText 后控件回到第 0 行，再滚回等效位置。
+
+	// 替换前记下首个可见行；EM_REPLACESEL 后控件回到第 0 行，再滚回等效位置。
 	firstVisible := int(win.SendMessage(hwnd, win.EM_GETFIRSTVISIBLELINE, 0, 0))
 	target := 0
 	if firstVisible > 0 {
@@ -743,13 +741,35 @@ func (ui *gatewayUI) pumpLogs() {
 	}
 
 	win.SendMessage(hwnd, win.WM_SETREDRAW, 0, 0)
-	ui.logEdit.SetText(ui.shownText)
+	if ui.shownText == "" {
+		// 首次：全量设置
+		ui.shownText = newText
+		ui.logEdit.SetText(ui.shownText)
+	} else if len(ui.shownText)+len(newText)+2 <= 80000 {
+		// 增量插入到开头（取代全量 SetText，避免闪烁）：EM_REPLACESEL 在
+		// ReadOnly 控件上不工作，临时取消只读、插入后恢复。
+		ui.shownText = newText + "\r\n" + ui.shownText
+		_ = ui.logEdit.SetReadOnly(false)
+		ui.logEdit.SetTextSelection(0, 0)
+		ui.logEdit.ReplaceSelectedText(newText+"\r\n", false)
+		_ = ui.logEdit.SetReadOnly(true)
+	} else {
+		// 超限：全量重建（低频，仅每 8 万字符一次，此时闪一下可接受）
+		ui.shownText = newText + "\r\n" + ui.shownText
+		if len(ui.shownText) > 80000 {
+			ui.shownText = ui.shownText[:50000]
+		}
+		ui.logEdit.SetText(ui.shownText)
+	}
 	if target > 0 {
 		// EM_LINESCROLL 自动夹紧到实际行数，截断掉尾部旧行也不会越界。
 		win.SendMessage(hwnd, win.EM_LINESCROLL, 0, uintptr(target))
 	}
 	win.SendMessage(hwnd, win.WM_SETREDRAW, 1, 0)
-	win.UpdateWindow(hwnd)
+	// 异步失效而非同步重绘：WM_SETREDRAW 1 后让系统在下一个 WM_PAINT 自然
+	// 合并重绘，避免 UpdateWindow 强制整窗重绘造成的闪烁（zen-proxy 靠低
+	// 频 + 小量、freellmapi 靠增量追加同一思路）。
+	ui.logEdit.Invalidate()
 }
 
 func (ui *gatewayUI) refreshStatus() {

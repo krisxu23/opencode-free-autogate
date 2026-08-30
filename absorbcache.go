@@ -31,11 +31,11 @@ const (
 )
 
 type absorbCacheEntry struct {
-	body      []byte
-	header    httpHeaderSnapshot
-	status    int
-	storedAt  time.Time
-	lastUsed  time.Time
+	body     []byte
+	header   httpHeaderSnapshot
+	status   int
+	storedAt time.Time
+	lastUsed time.Time
 }
 
 type absorbCache struct {

@@ -269,7 +269,7 @@ func newGateway(cfg config) *gateway {
 		freshPassed: make(map[string]slot),
 		sticky:      make(map[string]stickyEntry),
 		modelHealth: newModelHealthTracker(),
-		deepDedup:  newDeepProbeIPCache(),
+		deepDedup:   newDeepProbeIPCache(),
 	}
 	if cfg.absorbCacheTTL > 0 {
 		g.absorbCache = newAbsorbCache(cfg.absorbCacheTTL)
@@ -783,9 +783,9 @@ func parseResetHint(body []byte) time.Duration {
 }
 
 const (
-	minQuotaBench   = 30 * time.Second  // 短于该值的 Retry-After 没有板凳意义
-	maxQuotaBench   = 24 * time.Hour    // 板凳上限：跨天重置的额度最多等一天
-	creditBenchDur  = 24 * time.Hour    // 计费类错误（402）：探活无法证伪充值，直接一天
+	minQuotaBench    = 30 * time.Second // 短于该值的 Retry-After 没有板凳意义
+	maxQuotaBench    = 24 * time.Hour   // 板凳上限：跨天重置的额度最多等一天
+	creditBenchDur   = 24 * time.Hour   // 计费类错误（402）：探活无法证伪充值，直接一天
 	overloadBenchDur = 5 * time.Minute  // 过载/容量挤兑（5xx+特征标记）：推断短板凳
 	// maxOpenCodeRetryAfter 是 opencode 上游 429 的 Retry-After 封顶（借鉴
 	// opencode-swap 的 maxRateLimitCooldownMs）：上游可能把周重置日期塞进

@@ -26,8 +26,8 @@ import (
 // 撞一个已下线的模型。
 
 type modelHealthState struct {
-	status   string // working / rateLimited / flaky / dead
-	fails    int    // 连续失败次数
+	status    string // working / rateLimited / flaky / dead
+	fails     int    // 连续失败次数
 	lastProbe time.Time
 }
 

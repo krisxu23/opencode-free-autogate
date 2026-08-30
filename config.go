@@ -46,38 +46,38 @@ type config struct {
 	refreshInterval      time.Duration
 	probeRoundGap        time.Duration // 两轮初检之间的最小间隔：公益源按分钟级更新，抓太勤只会招限流
 	streamIdle           time.Duration
-	streamKeepalive      time.Duration // 流内保活间隔：上游静默多久注入一次协议事件（0=关）
-	stallWindow          time.Duration // 慢流看门狗窗口：窗口内字节多于 0 但低于阈值判卡死
-	stallMinBytes        int           // 慢流看门狗窗口内的最小字节数（0 关闭看门狗）
-	streamResume         bool          // 中流续写：透传流中断时用已发文本作 prefill 补尾（仅 chat 形态）
-	raceEnabled          bool          // 并行竞速：同一请求同时发往多个出口，最快返回者胜出
-	raceWidth            int           // 竞速中自动节点最多同时尝试几路（手动节点始终全上）
-	hedgeDelay           time.Duration // 对冲竞速：首批无首字节后加发下一批的延迟
-	stickyEnabled        bool          // 会话粘性：同会话优先复用上次胜出的出口（prompt 缓存友好）
-	localMocks           bool          // 本地拦截代理管家流量（配额检查等），零上游消耗
-	deepProbeInterval    time.Duration // chat 深检间隔：识别"网络通但额度枯竭"的假健康节点
-	probeConcurrency     int           // 检测并发路数：GET 初检与 chat 深检/复检共用（默认 32，上限 128）
-	probeModel           string        // 深检固定模型：big-pickle 长期在售，其他名字会下线
-	cacheFields          bool          // 注入 prompt 缓存字段（延长上游提示缓存 TTL）
-	bodyFingerprint      bool          // 统一出站请求体顶层键序（对齐原生 CLI 指纹）
-	sseHygiene           bool          // SSE 分块卫生：丢弃无效数据行/删空 tool_calls/补缺失字段
-	echoDebug            bool          // 记录上游回传响应头（脱敏），回显出处守卫取证用
-	tlsInsecure          bool          // INSECURE_TLS=1：上游连接跳过证书校验（自签镜像/代理环境）
-	transportDialTimeout time.Duration // 共享连接池统一的拨号/TLS 握手超时（随首字节超时初始化）
-	opencodePoolOff      bool          // OpenCode 供应商禁用节点池出口（零值 false = 走池，测试/旧配置零回归）
-	clinePoolEnabled     bool          // Cline 供应商节点池出口开关（默认关：直连）
-	cfFallbackURL        string        // 稳定锚点：Cloudflare Worker（ai-gateway）地址，全池耗尽后借道交付
-	cfFallbackKey        string        // 稳定锚点的代理 Key（Worker 管理面板创建）
-	preferredRegions     string        // 地区偏好（逗号分隔国家码 US,JP,SG；空 = 不偏好）
-	holdbackWindow       time.Duration // 提交前缓冲窗口：透传流开头这段时间内截断可静默换道重发（0=关）
-	holdbackBytes        int           // holdback 缓冲字节上限
-	holdbackRetries      int           // holdback 提交前截断的静默重发次数
-	modelFallbacks       []string      // 模型级 fallback 链：出口耗尽且模型被限流时依次尝试的下游模型
+	streamKeepalive      time.Duration     // 流内保活间隔：上游静默多久注入一次协议事件（0=关）
+	stallWindow          time.Duration     // 慢流看门狗窗口：窗口内字节多于 0 但低于阈值判卡死
+	stallMinBytes        int               // 慢流看门狗窗口内的最小字节数（0 关闭看门狗）
+	streamResume         bool              // 中流续写：透传流中断时用已发文本作 prefill 补尾（仅 chat 形态）
+	raceEnabled          bool              // 并行竞速：同一请求同时发往多个出口，最快返回者胜出
+	raceWidth            int               // 竞速中自动节点最多同时尝试几路（手动节点始终全上）
+	hedgeDelay           time.Duration     // 对冲竞速：首批无首字节后加发下一批的延迟
+	stickyEnabled        bool              // 会话粘性：同会话优先复用上次胜出的出口（prompt 缓存友好）
+	localMocks           bool              // 本地拦截代理管家流量（配额检查等），零上游消耗
+	deepProbeInterval    time.Duration     // chat 深检间隔：识别"网络通但额度枯竭"的假健康节点
+	probeConcurrency     int               // 检测并发路数：GET 初检与 chat 深检/复检共用（默认 32，上限 128）
+	probeModel           string            // 深检固定模型：big-pickle 长期在售，其他名字会下线
+	cacheFields          bool              // 注入 prompt 缓存字段（延长上游提示缓存 TTL）
+	bodyFingerprint      bool              // 统一出站请求体顶层键序（对齐原生 CLI 指纹）
+	sseHygiene           bool              // SSE 分块卫生：丢弃无效数据行/删空 tool_calls/补缺失字段
+	echoDebug            bool              // 记录上游回传响应头（脱敏），回显出处守卫取证用
+	tlsInsecure          bool              // INSECURE_TLS=1：上游连接跳过证书校验（自签镜像/代理环境）
+	transportDialTimeout time.Duration     // 共享连接池统一的拨号/TLS 握手超时（随首字节超时初始化）
+	opencodePoolOff      bool              // OpenCode 供应商禁用节点池出口（零值 false = 走池，测试/旧配置零回归）
+	clinePoolEnabled     bool              // Cline 供应商节点池出口开关（默认关：直连）
+	cfFallbackURL        string            // 稳定锚点：Cloudflare Worker（ai-gateway）地址，全池耗尽后借道交付
+	cfFallbackKey        string            // 稳定锚点的代理 Key（Worker 管理面板创建）
+	preferredRegions     string            // 地区偏好（逗号分隔国家码 US,JP,SG；空 = 不偏好）
+	holdbackWindow       time.Duration     // 提交前缓冲窗口：透传流开头这段时间内截断可静默换道重发（0=关）
+	holdbackBytes        int               // holdback 缓冲字节上限
+	holdbackRetries      int               // holdback 提交前截断的静默重发次数
+	modelFallbacks       []string          // 模型级 fallback 链：出口耗尽且模型被限流时依次尝试的下游模型
 	modelAliases         map[string]string // 客户端模型名别名 → 免费模型名（Codex/Cline 内置名映射）
-	maxRetryAfter        time.Duration // Retry-After 封顶（PROXY_MAX_RETRY_AFTER，默认 1h）
-	payloadLimit         int           // 请求体载荷上限（字节）：超限自动裁剪历史（0=关闭裁剪）
-	absorbCacheTTL       time.Duration // 吸收产物缓存 TTL（PROXY_ABSORB_CACHE_TTL_MS，0=关闭）
-	normalizeMessages    bool          // 消息归一化/修复管线（PROXY_NORMALIZE_MESSAGES，默认关）
+	maxRetryAfter        time.Duration     // Retry-After 封顶（PROXY_MAX_RETRY_AFTER，默认 1h）
+	payloadLimit         int               // 请求体载荷上限（字节）：超限自动裁剪历史（0=关闭裁剪）
+	absorbCacheTTL       time.Duration     // 吸收产物缓存 TTL（PROXY_ABSORB_CACHE_TTL_MS，0=关闭）
+	normalizeMessages    bool              // 消息归一化/修复管线（PROXY_NORMALIZE_MESSAGES，默认关）
 }
 
 func loadConfig(project projectSpec) config {
