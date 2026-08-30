@@ -1093,20 +1093,30 @@ func streamResponse(w http.ResponseWriter, ctx context.Context, live *liveRespon
 			log.Printf("[SSE卫生] 本流丢弃 %d 行无效数据", opts.hyg.dropped)
 		}
 	}
-	// report 只在上游侧结束时调用；客户端主动断开（写失败/请求取消）
-	// 与上游质量无关，不记账。
-	report := func() {
-		if opts.observe != nil {
-			opts.observe(!terminalSeen)
-		}
-	}
 	// 上游侧流结束（空闲超时/慢流看门狗/EOF）的统一收尾：先按未见终止
 	// 标记记账（出口确实断过，该降权降权），再尝试中流续写——续写成功
 	// 时客户端拿到带终止标记的完整回复，失败则维持静默干净关闭，
 	// 交给客户端既有的自动重试语义。
 	finish := func() {
 		flushTail()
-		report()
+		// 空响应检测（empty_model_response 的交付层兜底）：流带着终止标记
+		// 正常收尾，但全程没有产生任何文本内容（镜像返回 200 + role 块 +
+		// [DONE] 的空流）——对客户端就是"模型未返回任何内容"。这类响应
+		// 按截断记账，出口降权、下次竞速绕开；不触发续写（无内容可续）。
+		emptyResponse := terminalSeen && textCol != nil && textCol.text.Len() == 0
+		if opts.observe != nil {
+			opts.observe(!terminalSeen || emptyResponse)
+		}
+		if emptyResponse {
+			proxy := ""
+			upstream := ""
+			if opts.resumer != nil {
+				proxy = opts.resumer.trace.finalProxy
+				upstream = opts.resumer.trace.upstream
+			}
+			log.Printf("[空响应] 流以终止标记结束但无任何内容（出口:%s 镜像:%s），记截断降权", proxy, upstream)
+			return
+		}
 		if terminalSeen || ctx.Err() != nil || textCol == nil {
 			return
 		}

@@ -1461,39 +1461,39 @@ func (g *gateway) perform(ctx context.Context, request upstreamRequest, proxyURL
 			live.Close()
 			return nil, err
 		}
-// 流首块 JSON 错误检测（借鉴 opencode-free-proxy）：opencode 上游
-			// 限流时可能返回 200 OK + SSE 首行内嵌 {"error":{...FreeUsageLimitError...}}，
-			// 绕过 HTTP 429 判定。此处识别后转为可重试错误响应，出口坐板凳、
-			// 竞速/吸收换下一出口，客户端不会拿到一条含诡异 JSON 的流。
-			if errStatus, isErr := firstDataError(prefix); isErr {
-				body, _ := live.readAll(request.deadline)
-				full := append(append([]byte{}, prefix...), body...)
-				live.Close()
-				garbageBase := request.upstream
-				if garbageBase == "" {
-					garbageBase = g.cfg.project.upstream
-				}
-				// 200 OK + 错误首块：FreeUsageLimitError 视为限流（429 记账坐板凳），
-				// 其余上游错误按 502 换下一出口（不坐额度板凳，可能是模型/参数问题）。
-				log.Printf("[形态] %s 流首块 JSON 错误（200 OK + 内嵌 error），按 %d 换道",
-					shortUpstream(garbageBase), errStatus)
-				return &gatewayResponse{status: errStatus, header: header, body: full}, nil
+		// 流首块 JSON 错误检测（借鉴 opencode-free-proxy）：opencode 上游
+		// 限流时可能返回 200 OK + SSE 首行内嵌 {"error":{...FreeUsageLimitError...}}，
+		// 绕过 HTTP 429 判定。此处识别后转为可重试错误响应，出口坐板凳、
+		// 竞速/吸收换下一出口，客户端不会拿到一条含诡异 JSON 的流。
+		if errStatus, isErr := firstDataError(prefix); isErr {
+			body, _ := live.readAll(request.deadline)
+			full := append(append([]byte{}, prefix...), body...)
+			live.Close()
+			garbageBase := request.upstream
+			if garbageBase == "" {
+				garbageBase = g.cfg.project.upstream
 			}
-			// 空响应拦截（竞速胜者验证门扩展）：镜像返回 200 + 首行即 [DONE]
-			// 或空 choices 作为首块时，竞速会把它当作"最快胜者"交付，客户端
-			// 收到 200 + 空流 → empty_model_response。此处视作空流换下一出口，
-			// 不让无内容响应通过验证门。
-			if prefixEmptyResponse(prefix) {
-				live.Close()
-				garbageBase := request.upstream
-				if garbageBase == "" {
-					garbageBase = g.cfg.project.upstream
-				}
-				log.Printf("[形态] %s 流首块为空（首个 data 行即 [DONE] 或无内容），视作空流换道",
-					shortUpstream(garbageBase))
-				return nil, errStreamTruncated
+			// 200 OK + 错误首块：FreeUsageLimitError 视为限流（429 记账坐板凳），
+			// 其余上游错误按 502 换下一出口（不坐额度板凳，可能是模型/参数问题）。
+			log.Printf("[形态] %s 流首块 JSON 错误（200 OK + 内嵌 error），按 %d 换道",
+				shortUpstream(garbageBase), errStatus)
+			return &gatewayResponse{status: errStatus, header: header, body: full}, nil
+		}
+		// 空响应拦截（竞速胜者验证门扩展）：镜像返回 200 + 首行即 [DONE]
+		// 或空 choices 作为首块时，竞速会把它当作"最快胜者"交付，客户端
+		// 收到 200 + 空流 → empty_model_response。此处视作空流换下一出口，
+		// 不让无内容响应通过验证门。
+		if prefixEmptyResponse(prefix) {
+			live.Close()
+			garbageBase := request.upstream
+			if garbageBase == "" {
+				garbageBase = g.cfg.project.upstream
 			}
-			live.response.Body = &prefixedBody{prefix: prefix, src: live.response.Body}
+			log.Printf("[形态] %s 流首块为空（首个 data 行即 [DONE] 或无内容），视作空流换道",
+				shortUpstream(garbageBase))
+			return nil, errStreamTruncated
+		}
+		live.response.Body = &prefixedBody{prefix: prefix, src: live.response.Body}
 		return &gatewayResponse{status: status, header: header, live: live, origin: &request}, nil
 	}
 	body, err := live.readAll(request.deadline)
@@ -1528,22 +1528,26 @@ func firstDataError(prefix []byte) (int, bool) {
 	return 0, false
 }
 
-// prefixEmptyResponse 检查流首段字节是否为"无内容空响应"：镜像返回 200 +
-// 首行即 [DONE]（或 choices 为空数组/无内容）时，竞速会把这条流当作最快
-// 胜者交付，客户端收到 200 + 空流 → empty_model_response（实测镜像常见
-// 形态：到响应头后首数据 0s，即首个 data 行就是收尾标记）。
-// 正常 chat 流的首块是 role/delta 块（choices[0].delta 有内容或 role），
-// 不会被误判。
+// prefixEmptyResponse 检查流首段字节是否为"无内容空响应"：镜像返回 200 但
+// 整段只有 role 块/空 choices 后立即 [DONE]（无任何 content）时，竞速会把
+// 这条流当作最快胜者交付，客户端收到 200 + 空流 → empty_model_response。
+// 判定规则：扫描首段所有 data 行——遇到 [DONE] 时，若此前从未出现过
+// 非空 delta.content，判空；出现过 content 则正常收尾。首段未见 [DONE]
+// 视为慢流放行（交给后续流处理，不误杀）。
 func prefixEmptyResponse(prefix []byte) bool {
+	hasContent := false
 	for _, line := range bytes.Split(prefix, []byte("\n")) {
 		trimmed := bytes.TrimSpace(line)
 		if !bytes.HasPrefix(trimmed, []byte("data:")) {
 			continue
 		}
 		payload := bytes.TrimSpace(trimmed[len("data:"):])
-		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-			// 首个真实 data 行就是收尾标记（或空行）：无任何内容。
-			return true
+		if len(payload) == 0 {
+			continue // 空 data 行
+		}
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			// 收尾标记：此前无任何内容 → 空响应；已有内容 → 正常收尾。
+			return !hasContent
 		}
 		var probe struct {
 			Choices []struct {
@@ -1551,28 +1555,18 @@ func prefixEmptyResponse(prefix []byte) bool {
 					Content string `json:"content"`
 					Role    string `json:"role"`
 				} `json:"delta"`
-				FinishReason any `json:"finish_reason"`
 			} `json:"choices"`
-			Usage json.RawMessage `json:"usage"`
 		}
 		if json.Unmarshal([]byte(payload), &probe) != nil {
 			continue // 非 JSON data 行（继续看下一行）
 		}
-		// 首个合法 JSON data 行：带 usage 的终块（部分上游先回 usage）不算空；
-		// choices 为空 → 空响应；首块 delta 无内容无 role 但带 finish_reason
-		//（"立即收尾"流）是合法终止，不算空；否则是有内容的正常流。
-		if len(probe.Usage) > 0 {
-			return false
+		if len(probe.Choices) > 0 {
+			if delta := probe.Choices[0].Delta; delta.Content != "" {
+				hasContent = true
+			}
 		}
-		if len(probe.Choices) == 0 {
-			return true
-		}
-		delta := probe.Choices[0].Delta
-		if delta.Content == "" && delta.Role == "" && probe.Choices[0].FinishReason == nil {
-			return true
-		}
-		return false
 	}
+	// 首段内未见 [DONE]：可能是正常慢流（首块 role 后内容还没到），放行。
 	return false
 }
 

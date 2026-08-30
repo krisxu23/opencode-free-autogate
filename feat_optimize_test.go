@@ -45,13 +45,15 @@ func TestPrefixEmptyResponse(t *testing.T) {
 		want bool
 	}{
 		{"首行即 [DONE]", `data: [DONE]` + "\n\n", true},
-		{"首行空 choices", `data: {"choices":[]}` + "\n\n", true},
-		{"首块 delta 空且无终止", `data: {"choices":[{"delta":{}}]}` + "\n\n", true},
-		{"首块 delta 空但带 finish_reason 是合法收尾", `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n", false},
-		{"正常 role 块", `data: {"choices":[{"delta":{"role":"assistant"}}]}` + "\n\n", false},
+		{"空 choices 后 [DONE]", `data: {"choices":[]}` + "\n\ndata: [DONE]\n\n", true},
+		{"仅 role 块后 [DONE]（真实空响应形态）", `data: {"choices":[{"delta":{"role":"assistant"}}]}` + "\n\ndata: [DONE]\n\n", true},
+		{"空 delta 无终止后 [DONE]", `data: {"choices":[{"delta":{}}]}` + "\n\ndata: [DONE]\n\n", true},
+		{"有内容后 [DONE] 正常", `data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\ndata: [DONE]\n\n", false},
+		{"正常 role 块（慢流首段无 [DONE] 放行）", `data: {"choices":[{"delta":{"role":"assistant"}}]}` + "\n\n", false},
 		{"正常内容块", `data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n", false},
 		{"先 usage 后内容", `data: {"usage":{"prompt_tokens":1}}` + "\n\n", false},
 		{"首行是注释后 [DONE]", `: keepalive` + "\n" + `data: [DONE]` + "\n\n", true},
+		{"空 data 行后 [DONE]", `data: ` + "\n\ndata: [DONE]\n\n", true},
 	}
 	for _, c := range cases {
 		if got := prefixEmptyResponse([]byte(c.in)); got != c.want {
