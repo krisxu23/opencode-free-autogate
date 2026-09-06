@@ -155,6 +155,7 @@ func loadConfig(project projectSpec) config {
 		holdbackRetries:      nonNegative(envInt("PROXY_HOLDBACK_RETRIES", 2)),
 		modelFallbacks:       parseModelFallbacks(os.Getenv("PROXY_MODEL_FALLBACKS")),
 		modelAliases:         parseModelAliases(os.Getenv("PROXY_MODEL_ALIASES")),
+		suppliers:            parseSuppliers(os.Getenv("SUPPLIERS_JSON")),
 		autoPools:            parseAutoPools(os.Getenv("PROXY_AUTO_POOLS")),
 		maxRetryAfter:        envMilliseconds("PROXY_MAX_RETRY_AFTER", 0),
 		payloadLimit:         envInt("PROXY_PAYLOAD_LIMIT", 0),
@@ -171,6 +172,16 @@ func loadConfig(project projectSpec) config {
 	// 池的拨号参数在启动阶段一次性注入：键只依赖代理地址——探活即预热竞速连接。
 	sharedTransports.configure(firstByte, tlsInsecure)
 	return cfg
+}
+
+// parseSuppliers 解析 SUPPLIERS_JSON；失败记日志后回落为空（零回归）。
+func parseSuppliers(raw string) []Supplier {
+	parsed, err := ParseSuppliersJSON(raw)
+	if err != nil {
+		log.Printf("[配置] SUPPLIERS_JSON 解析失败，已忽略: %v", err)
+		return nil
+	}
+	return parsed
 }
 
 // parseModelFallbacks 解析 PROXY_MODEL_FALLBACKS（逗号分隔的模型名列表），

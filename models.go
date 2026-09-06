@@ -207,6 +207,8 @@ func (g *gateway) modelsResponse(ctx context.Context) *gatewayResponse {
 	all := make([]string, 0, len(ids)+len(clineModels))
 	all = append(all, ids...)
 	all = append(all, clineModels...)
+	// 合并通用供应商与 auto 池（带 供应商/ 与 auto/ 前缀）。
+	all = append(all, g.supplierModelIDs()...)
 	sort.Strings(all)
 
 	created := time.Now().Unix()
@@ -215,6 +217,9 @@ func (g *gateway) modelsResponse(ctx context.Context) *gatewayResponse {
 		ownedBy := g.cfg.project.ownedBy
 		if strings.HasPrefix(id, "cline/") {
 			ownedBy = "cline"
+		} else if i := strings.Index(id, "/"); i > 0 &&
+			!strings.HasPrefix(id, "opencode/") && !strings.HasPrefix(id, "auto/") {
+			ownedBy = id[:i]
 		}
 		models = append(models, map[string]any{
 			"id":       id,
@@ -237,6 +242,15 @@ func (g *gateway) rewriteModelPayload(ctx context.Context, payload map[string]an
 	}
 	_, redirect := g.modelMaps(ctx)
 	model, _ := payload["model"].(string)
+	// 通用供应商直通：local-m365/gpt-5.6-sol 这类前缀剥掉即用真名透传，
+	// 不查 opencode 的 redirect 表（分发时走供应商自己的 baseURL）。
+	if supID, real, ok := SplitSupplierPrefix(model); ok && supID != "opencode" && supID != "cline" {
+		if _, found := g.lookupSupplier(model); found {
+			payload["model"] = real
+			log.Printf("[模型直通] %s -> %s", model, real)
+			return true
+		}
+	}
 	// 别名映射（P2-8，借鉴 zen-proxy modelAliases）：客户端内置的固定模型名
 	//（如 claude-sonnet-4.5）先查别名表 → 免费模型，再走 redirect。
 	if aliased, ok := g.cfg.modelAliases[model]; ok {
@@ -258,6 +272,32 @@ func (g *gateway) rewriteModelPayload(ctx context.Context, payload map[string]an
 	payload["model"] = upstream
 	log.Printf("[模型重定向] %s -> %s", model, upstream)
 	return true
+}
+
+// supplierModelIDs 返回通用供应商模型（供应商/模型）与 auto 池名（auto[/池名]），
+// 供 /v1/models 与 opencode/cline 列表合并展示。
+func (g *gateway) supplierModelIDs() []string {
+	var ids []string
+	for _, s := range g.cfg.suppliers {
+		if !s.Enabled {
+			continue
+		}
+		for _, m := range s.Models {
+			m = strings.TrimSpace(m)
+			if m != "" {
+				ids = append(ids, s.ID+"/"+m)
+			}
+		}
+	}
+	for name := range g.cfg.autoPools {
+		if name == "auto" {
+			ids = append(ids, "auto")
+		} else {
+			ids = append(ids, "auto/"+name)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func cloneStringMap(source map[string]string) map[string]string {
