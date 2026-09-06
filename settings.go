@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,6 +66,10 @@ type uiSettings struct {
 	OpenCodePoolOff  bool   `json:"opencode_pool_off"`
 	ClinePoolEnabled bool   `json:"cline_pool_enabled"`
 	PreferredRegions string `json:"preferred_regions"` // 地区偏好（逗号分隔国家码，空 = 不偏好）
+	// 通用供应商（OpenAI 兼容）：opencode / cline / m365 为内置保留 ID，
+	// 不可在此注册。缺省 nil = 零回归（既有行为不变）。
+	Suppliers      []Supplier `json:"suppliers"`
+	SuppliersInput string     `json:"suppliers_input"`
 }
 
 // 节点池默认源已移除：新装用户节点池为空，公共推荐源见 README。
@@ -169,6 +174,15 @@ func (s uiSettings) normalized() uiSettings {
 		s.Mirrors, _ = parseMirrorList(input)
 	} else if len(s.Mirrors) > 0 {
 		s.MirrorInput = strings.Join(s.Mirrors, "\r\n")
+	}
+	// SuppliersInput 是唯一真相源（与 ProxyInput 同口径）：非空时解析覆盖数组。
+	if input := strings.TrimSpace(s.SuppliersInput); input != "" {
+		parsed, err := ParseSuppliersJSON(input)
+		if err != nil {
+			log.Printf("[配置] suppliers_input 解析失败，已忽略: %v", err)
+		} else {
+			s.Suppliers = parsed
+		}
 	}
 	return s
 }
