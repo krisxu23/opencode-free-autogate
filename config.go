@@ -74,6 +74,8 @@ type config struct {
 	holdbackRetries      int               // holdback 提交前截断的静默重发次数
 	modelFallbacks       []string          // 模型级 fallback 链：出口耗尽且模型被限流时依次尝试的下游模型
 	modelAliases         map[string]string // 客户端模型名别名 → 免费模型名（Codex/Cline 内置名映射）
+	suppliers            []Supplier        // 通用供应商（SUPPLIERS_JSON，config.json 透传）
+	autoPools            map[string][]string // auto 模型池（PROXY_AUTO_POOLS，config.json 透传）
 	maxRetryAfter        time.Duration     // Retry-After 封顶（PROXY_MAX_RETRY_AFTER，默认 1h）
 	payloadLimit         int               // 请求体载荷上限（字节）：超限自动裁剪历史（0=关闭裁剪）
 	absorbCacheTTL       time.Duration     // 吸收产物缓存 TTL（PROXY_ABSORB_CACHE_TTL_MS，0=关闭）
@@ -153,6 +155,7 @@ func loadConfig(project projectSpec) config {
 		holdbackRetries:      nonNegative(envInt("PROXY_HOLDBACK_RETRIES", 2)),
 		modelFallbacks:       parseModelFallbacks(os.Getenv("PROXY_MODEL_FALLBACKS")),
 		modelAliases:         parseModelAliases(os.Getenv("PROXY_MODEL_ALIASES")),
+		autoPools:            parseAutoPools(os.Getenv("PROXY_AUTO_POOLS")),
 		maxRetryAfter:        envMilliseconds("PROXY_MAX_RETRY_AFTER", 0),
 		payloadLimit:         envInt("PROXY_PAYLOAD_LIMIT", 0),
 		absorbCacheTTL:       envMilliseconds("PROXY_ABSORB_CACHE_TTL_MS", 300000),

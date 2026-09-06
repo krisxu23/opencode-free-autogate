@@ -37,6 +37,8 @@ var configManagedEnvKeys = []string{
 	"PROXY_POOL_OPENCODE",
 	"PROXY_POOL_CLINE",
 	"PROXY_PREFERRED_REGIONS",
+	"SUPPLIERS_JSON",
+	"PROXY_AUTO_POOLS",
 	"GATEWAY_KEY",
 }
 
@@ -70,6 +72,8 @@ type uiSettings struct {
 	// 不可在此注册。缺省 nil = 零回归（既有行为不变）。
 	Suppliers      []Supplier `json:"suppliers"`
 	SuppliersInput string     `json:"suppliers_input"`
+	// auto 模型池：池名 → 有序成员（成员为 前缀/模型，坏一个自动切下一个）。
+	AutoPools map[string][]string `json:"auto_pools"`
 }
 
 // 节点池默认源已移除：新装用户节点池为空，公共推荐源见 README。
@@ -252,6 +256,18 @@ func (s uiSettings) applyEnv() {
 	}
 	if s.PreferredRegions != "" {
 		setIfEmpty("PROXY_PREFERRED_REGIONS", s.PreferredRegions)
+	}
+	if len(s.Suppliers) > 0 {
+		if raw, err := json.Marshal(s.Suppliers); err == nil {
+			setIfEmpty("SUPPLIERS_JSON", string(raw))
+		}
+	}
+	if len(s.AutoPools) > 0 {
+		var parts []string
+		for name, members := range s.AutoPools {
+			parts = append(parts, name+"="+strings.Join(members, ","))
+		}
+		setIfEmpty("PROXY_AUTO_POOLS", strings.Join(parts, ";"))
 	}
 	setIfEmpty("GATEWAY_KEY", s.GatewayKey)
 }

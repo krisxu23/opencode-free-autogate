@@ -486,9 +486,8 @@ func (a *app) handlePost(w http.ResponseWriter, r *http.Request, path string, de
 		// 中客户端不再直接收到 503（流式的保活心跳由 sseGuard 负责）。
 		response, err = a.gateway.dispatchAbsorb(r.Context(), request, trace)
 	} else {
-		// 模型级 fallback 链：出口耗尽且模型被限流时依次尝试候选模型
-		//（无 fallback 配置时等价于原 dispatch，零开销）。
-		response, err = a.gateway.dispatchModelChain(r.Context(), request, trace)
+		// 统一分发：auto 池/通用供应商前缀走供应商路由，其余等价于原 fallback 链。
+		response, err = a.gateway.dispatchUnified(r.Context(), request, trace)
 	}
 	if guard != nil {
 		guard.Finish()
