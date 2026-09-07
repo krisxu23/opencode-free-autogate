@@ -377,9 +377,17 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 											dcl.Composite{
 												Layout: dcl.HBox{MarginsZero: true},
 												Children: []dcl.Widget{
-													dcl.PushButton{Text: "3. 粘贴并确认添加", Font: uiFont, OnClicked: func() {
-														go ui.m365ConfirmAdd()
-													}},
+												dcl.PushButton{Text: "3. 粘贴并确认添加", Font: uiFont, OnClicked: func() {
+													// OnClicked 跑在 UI 线程：直接读框，不经跨线程回读。
+													cb, batchPeek := "", ""
+													if ui.m365Callback != nil {
+														cb = ui.m365Callback.Text()
+													}
+													if ui.m365BatchEdit != nil {
+														batchPeek = ui.m365BatchEdit.Text()
+													}
+													go ui.m365ConfirmAdd(strings.TrimSpace(cb), batchPeek)
+												}},
 													dcl.HSpacer{},
 												},
 											},
@@ -401,9 +409,16 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 											dcl.Composite{
 												Layout: dcl.HBox{MarginsZero: true},
 												Children: []dcl.Widget{
-													dcl.PushButton{Text: "批量密码授权", Font: uiFont, OnClicked: func() {
-														go ui.m365BatchProvision()
-													}},
+												dcl.PushButton{Text: "批量密码授权", Font: uiFont, OnClicked: func() {
+													raw, cbPeek := "", ""
+													if ui.m365BatchEdit != nil {
+														raw = ui.m365BatchEdit.Text()
+													}
+													if ui.m365Callback != nil {
+														cbPeek = ui.m365Callback.Text()
+													}
+													go ui.m365BatchProvision(raw, cbPeek)
+												}},
 													dcl.HSpacer{},
 												},
 											},
@@ -430,9 +445,13 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 													}},
 													dcl.Label{Text: "删除账号（填 ID 或邮箱）:"},
 													dcl.LineEdit{AssignTo: &ui.m365DelEdit, Font: monoFont, MinSize: dcl.Size{Width: 200}},
-													dcl.PushButton{Text: "删除", Font: uiFont, OnClicked: func() {
-														go ui.m365DeleteAccount()
-													}},
+												dcl.PushButton{Text: "删除", Font: uiFont, OnClicked: func() {
+													target := ""
+													if ui.m365DelEdit != nil {
+														target = strings.TrimSpace(ui.m365DelEdit.Text())
+													}
+													go ui.m365DeleteAccount(target)
+												}},
 													dcl.HSpacer{},
 												},
 											},

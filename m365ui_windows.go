@@ -42,15 +42,14 @@ func (ui *gatewayUI) m365StartAuth() {
 	log.Printf("[M365] 授权已发起")
 }
 
-func (ui *gatewayUI) m365ConfirmAdd() {
-	var callback string
-	ui.window.Synchronize(func() {
-		if ui.m365Callback != nil {
-			callback = ui.m365Callback.Text()
+func (ui *gatewayUI) m365ConfirmAdd(callback, batchPeek string) {
+	log.Printf("[M365] 确认：回调框 %d 字符", len(callback))
+	if callback == "" {
+		if strings.Contains(batchPeek, "code=") {
+			ui.m365SetStatus("回调框是空的——你好像粘贴到下面的批量框了，请粘贴到上面的回调地址框。")
+		} else {
+			ui.m365SetStatus("先粘贴回调地址再确认。")
 		}
-	})
-	if strings.TrimSpace(callback) == "" {
-		ui.m365SetStatus("先粘贴回调地址再确认。")
 		return
 	}
 	eng, err := ensureM365()
@@ -101,13 +100,8 @@ func (ui *gatewayUI) m365RefreshAccounts() {
 	})
 }
 
-func (ui *gatewayUI) m365DeleteAccount() {
-	var target string
-	ui.window.Synchronize(func() {
-		if ui.m365DelEdit != nil {
-			target = strings.TrimSpace(ui.m365DelEdit.Text())
-		}
-	})
+func (ui *gatewayUI) m365DeleteAccount(target string) {
+	log.Printf("[M365] 删除：输入框 %d 字符", len(target))
 	if target == "" {
 		ui.m365SetStatus("先填写要删除的账号 ID 或邮箱。")
 		return
@@ -142,16 +136,15 @@ func (ui *gatewayUI) m365DeleteAccount() {
 
 // m365BatchProvision 批量密码直授：逐行换 token，成功入库参与轮询+故障转移。
 // 密码仅内存流转，不写日志不落盘；微软拒绝的行会逐行报错（MFA/联合认证请走 PKCE）。
-func (ui *gatewayUI) m365BatchProvision() {
-	var raw string
-	ui.window.Synchronize(func() {
-		if ui.m365BatchEdit != nil {
-			raw = ui.m365BatchEdit.Text()
-		}
-	})
+func (ui *gatewayUI) m365BatchProvision(raw, callbackPeek string) {
+	log.Printf("[M365] 批量：批量框 %d 字符", len(raw))
 	lines := parseAccountLines(raw)
 	if len(lines) == 0 {
-		ui.m365SetStatus("批量框为空：每行填 邮箱,密码。")
+		if strings.Contains(callbackPeek, "@") && strings.Contains(callbackPeek, ",") {
+			ui.m365SetStatus("批量框是空的——你好像填到别的框了，请填到密码直授的批量框（一行 邮箱,密码）。")
+		} else {
+			ui.m365SetStatus("批量框为空，每行填 邮箱,密码。")
+		}
 		return
 	}
 	eng, err := ensureM365()
