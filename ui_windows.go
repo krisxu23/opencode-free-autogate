@@ -91,6 +91,7 @@ type gatewayUI struct {
 	m365Callback      *walk.LineEdit // M365 回调地址粘贴框
 	m365Accounts      *walk.TextEdit // M365 账号列表
 	m365DelEdit       *walk.LineEdit // M365 待删除账号（ID 或邮箱）
+	m365BatchEdit     *walk.TextEdit // M365 批量密码授权（一行 邮箱,密码）
 	m365PendingState  string         // 进行中的 PKCE state
 	logCursor         int
 	modelsSeen        string
@@ -367,8 +368,31 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 									dcl.Label{AssignTo: &ui.m365Status, Text: "尚未开始授权。", Font: uiFont},
 								},
 							},
-							dcl.GroupBox{
-								Title:  "已授权账号",
+						dcl.GroupBox{
+							Title:  "密码直授（ROPC，多账号批量）",
+							Font:   uiFont,
+							Layout: dcl.VBox{Spacing: 6},
+							Children: []dcl.Widget{
+								dcl.Label{Text: "一行一个：邮箱,密码。仅未开 MFA、非联合认证的组织账号可用；个人号/MFA 号会被微软拒绝（届时用上方 PKCE）。密码只换 token 用，不落盘。"},
+								dcl.TextEdit{
+									AssignTo: &ui.m365BatchEdit,
+									VScroll:  true,
+									MinSize:  dcl.Size{Height: 64},
+									Font:     monoFont,
+								},
+								dcl.Composite{
+									Layout: dcl.HBox{MarginsZero: true},
+									Children: []dcl.Widget{
+										dcl.PushButton{Text: "批量密码授权", Font: uiFont, OnClicked: func() {
+											go ui.m365BatchProvision()
+										}},
+										dcl.HSpacer{},
+									},
+								},
+							},
+						},
+						dcl.GroupBox{
+							Title:  "已授权账号",
 								Font:   uiFont,
 								Layout: dcl.VBox{Spacing: 6},
 								Children: []dcl.Widget{

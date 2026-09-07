@@ -74,8 +74,30 @@ func ParseSuppliersJSON(raw string) ([]Supplier, error) {
 	return out, nil
 }
 
+// parseAccountLines 解析多账号密码输入：每行 "邮箱,密码"，空行与 # 注释跳过。
+// 密码只在内存里停留到换 token 为止，调用方不得落盘。
+func parseAccountLines(raw string) [][2]string {
+	var out [][2]string
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, ",", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		email := strings.TrimSpace(parts[0])
+		password := strings.TrimSpace(parts[1])
+		if email == "" || password == "" {
+			continue
+		}
+		out = append(out, [2]string{email, password})
+	}
+	return out
+}
+
 // suppliersSeedText 生成供应商编辑框的初始文本：优先回填用户原始输入，
-// 其次序列化已存数组，否则返回空数组（保存后无供应商，零回归）。
 func suppliersSeedText(s uiSettings) string {
 	if input := strings.TrimSpace(s.SuppliersInput); input != "" {
 		return input

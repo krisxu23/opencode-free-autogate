@@ -50,6 +50,16 @@ func TestSuppliersSeedText(t *testing.T) {
 	}
 }
 
+func TestParseAccountLines(t *testing.T) {
+	lines := parseAccountLines("# 注释\na@b.c, p1\n\nc@d.e,p2\r\nbadline\n,empty\n")
+	if len(lines) != 2 || lines[0][0] != "a@b.c" || lines[0][1] != "p1" || lines[1][0] != "c@d.e" {
+		t.Fatalf("bad parse: %q", lines)
+	}
+	if len(parseAccountLines("")) != 0 {
+		t.Fatal("empty input must yield nothing")
+	}
+}
+
 func TestParseSuppliersJSON(t *testing.T) {
 	parsed, err := ParseSuppliersJSON(`[{"id":"local-m365","base_url":"http://127.0.0.1:4141/v1","models":["a"]}]`)
 	if err != nil {

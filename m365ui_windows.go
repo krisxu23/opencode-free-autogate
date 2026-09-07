@@ -139,3 +139,50 @@ func (ui *gatewayUI) m365DeleteAccount() {
 	ui.m365SetStatus("已删除：" + target)
 	go ui.m365RefreshAccounts()
 }
+
+// m365BatchProvision 批量密码直授：逐行换 token，成功入库参与轮询+故障转移。
+// 密码仅内存流转，不写日志不落盘；微软拒绝的行会逐行报错（MFA/联合认证请走 PKCE）。
+func (ui *gatewayUI) m365BatchProvision() {
+	var raw string
+	ui.window.Synchronize(func() {
+		if ui.m365BatchEdit != nil {
+			raw = ui.m365BatchEdit.Text()
+		}
+	})
+	lines := parseAccountLines(raw)
+	if len(lines) == 0 {
+		ui.m365SetStatus("批量框为空：每行填 邮箱,密码。")
+		return
+	}
+	eng, err := ensureM365()
+	if err != nil {
+		ui.m365SetStatus("M365 引擎初始化失败：" + err.Error())
+		return
+	}
+	ok, fail := 0, 0
+	var fails []string
+	for _, line := range lines {
+		acc, err := eng.ProvisionAccount(line[0], line[1])
+		line[1] = ""
+		if err != nil {
+			fail++
+			fails = append(fails, line[0]+": "+err.Error())
+			log.Printf("[M365] 密码授权失败 %s", line[0])
+			continue
+		}
+		ok++
+		log.Printf("[M365] 密码授权成功: %s", acc.Email)
+	}
+	raw = ""
+	ui.window.Synchronize(func() {
+		if ui.m365BatchEdit != nil {
+			_ = ui.m365BatchEdit.SetText("")
+		}
+	})
+	summary := fmt.Sprintf("批量完成：成功 %d，失败 %d。", ok, fail)
+	if len(fails) > 0 {
+		summary += "首个失败：" + fails[0]
+	}
+	ui.m365SetStatus(summary)
+	go ui.m365RefreshAccounts()
+}

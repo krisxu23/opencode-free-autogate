@@ -222,6 +222,24 @@ func (e *Engine) CompleteAuth(state, callback string) (AccountToken, error) {
 	return acc, nil
 }
 
+// ProvisionAccount 用账号密码直授（ROPC）添加账号：仅适用于未启用 MFA、
+// 非联合认证的组织账号；个人号、MFA 号、条件访问会被微软直接拒绝，
+// 请改走 PKCE 授权。密码只用于本次换 token，不落盘不进日志。
+func (e *Engine) ProvisionAccount(email, password string) (AccountToken, error) {
+	email = strings.TrimSpace(email)
+	if email == "" || !strings.Contains(email, "@") {
+		return AccountToken{}, errors.New("m365: 邮箱格式不正确")
+	}
+	if strings.TrimSpace(password) == "" {
+		return AccountToken{}, errors.New("m365: 密码不能为空")
+	}
+	tok, err := ROPC(email, password)
+	if err != nil {
+		return AccountToken{}, fmt.Errorf("m365: 密码授权失败: %w", err)
+	}
+	return e.store.Upsert(tok)
+}
+
 // extractCodeState 同时接受完整回调 URL 与直接粘贴的 code。
 func extractCodeState(raw string) (code, state string) {
 	raw = strings.TrimSpace(raw)
