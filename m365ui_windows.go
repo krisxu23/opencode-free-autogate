@@ -159,8 +159,10 @@ func (ui *gatewayUI) m365BatchProvision(raw, callbackPeek string) {
 		line[1] = ""
 		if err != nil {
 			fail++
+			// 错误详情（AADSTS 码等）进日志与状态行：只含微软返回的原因，
+			// 不含密码本身，便于排查 MFA/风控/密码错误的具体差别。
 			fails = append(fails, line[0]+": "+err.Error())
-			log.Printf("[M365] 密码授权失败 %s", line[0])
+			log.Printf("[M365] 密码授权失败 %s：%v", line[0], err)
 			continue
 		}
 		ok++

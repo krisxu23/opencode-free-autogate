@@ -222,9 +222,11 @@ func (e *Engine) CompleteAuth(state, callback string) (AccountToken, error) {
 	return acc, nil
 }
 
-// ProvisionAccount 用账号密码直授（ROPC）添加账号：仅适用于未启用 MFA、
-// 非联合认证的组织账号；个人号、MFA 号、条件访问会被微软直接拒绝，
-// 请改走 PKCE 授权。密码只用于本次换 token，不落盘不进日志。
+// ProvisionAccount 用账号密码自动授权添加账号：内部驱动微软登录页完成
+// 「输账号 → 输密码 → 拿回调 code」全流程，再用 PKCE 换 token（ROPC
+// grant_type=password 对公共客户端不可用，详见 auth_autologin.go）。
+// MFA/条件访问/风控账号会在中途返回错误，届时改走 PKCE 弹窗授权。
+// 密码只用于本次登录，不落盘不进日志。
 func (e *Engine) ProvisionAccount(email, password string) (AccountToken, error) {
 	email = strings.TrimSpace(email)
 	if email == "" || !strings.Contains(email, "@") {
@@ -233,9 +235,23 @@ func (e *Engine) ProvisionAccount(email, password string) (AccountToken, error) 
 	if strings.TrimSpace(password) == "" {
 		return AccountToken{}, errors.New("m365: 密码不能为空")
 	}
-	tok, err := ROPC(email, password)
+	// 与 StartAuth 同源的 PKCE 材料：code 换 token 时必须配对。
+	verifier, err := Verifier()
+	if err != nil {
+		return AccountToken{}, err
+	}
+	state, err := Verifier()
+	if err != nil {
+		return AccountToken{}, err
+	}
+	redirect := RedirectURI()
+	res, err := AutoLogin(email, password, state, verifier, redirect, Challenge(verifier))
 	if err != nil {
 		return AccountToken{}, fmt.Errorf("m365: 密码授权失败: %w", err)
+	}
+	tok, err := ExchangeCode(res.Code, verifier, redirect)
+	if err != nil {
+		return AccountToken{}, fmt.Errorf("m365: 密码授权成功但换令牌失败: %w", err)
 	}
 	return e.store.Upsert(tok)
 }

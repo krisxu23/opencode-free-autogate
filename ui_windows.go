@@ -391,11 +391,11 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 										},
 									},
 									dcl.GroupBox{
-										Title:  "密码直授（ROPC，多账号批量）",
+										Title:  "密码自动授权（多账号批量）",
 										Font:   uiFont,
 										Layout: dcl.VBox{Spacing: 6},
 										Children: []dcl.Widget{
-											dcl.Label{Text: "一行一个：邮箱,密码。仅未开 MFA、非联合认证的组织账号可用；个人号/MFA 号会被微软拒绝（届时用上方 PKCE）。密码只换 token 用，不落盘。"},
+											dcl.Label{Text: "一行一个：邮箱,密码。自动完成微软登录并入库（无需弹窗）。MFA/条件访问/风控账号会失败并提示原因，届时用上方 PKCE。密码只登录一次，不落盘不进日志。"},
 											dcl.TextEdit{
 												AssignTo: &ui.m365BatchEdit,
 												VScroll:  true,
