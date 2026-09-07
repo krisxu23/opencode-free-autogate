@@ -242,13 +242,14 @@ func (g *gateway) rewriteModelPayload(ctx context.Context, payload map[string]an
 	}
 	_, redirect := g.modelMaps(ctx)
 	model, _ := payload["model"].(string)
-	// 通用供应商直通：local-m365/gpt-5.6-sol 这类前缀剥掉即用真名透传，
-	// 不查 opencode 的 redirect 表（分发时走供应商自己的 baseURL）。
-	if supID, real, ok := SplitSupplierPrefix(model); ok && supID != "opencode" && supID != "cline" {
+	// 通用供应商直通：local-m365/gpt-5.6-sol 这类前缀保留到分发阶段再剥。
+	// 这里绝不能提前改写 model——分发链路（dispatchUnified/dispatchSupplier）
+	// 靠前缀识别供应商与 auto 池成员，提前剥掉会让请求掉回 opencode 上游。
+	// 真名剥离发生在 dispatchSupplier（HTTP 供应商）与 dispatchM365（内置）。
+	if supID, _, ok := SplitSupplierPrefix(model); ok && supID != "opencode" && supID != "cline" {
 		if _, found := g.lookupSupplier(model); found {
-			payload["model"] = real
-			log.Printf("[模型直通] %s -> %s", model, real)
-			return true
+			log.Printf("[模型直通] %s 保留供应商前缀，分发时再剥", model)
+			return false
 		}
 	}
 	// 别名映射（P2-8，借鉴 zen-proxy modelAliases）：客户端内置的固定模型名
@@ -296,6 +297,8 @@ func (g *gateway) supplierModelIDs() []string {
 			ids = append(ids, "auto/"+name)
 		}
 	}
+	// 内置 M365 供应商：有可用账号才对外暴露模型。
+	ids = append(ids, m365ModelIDs()...)
 	sort.Strings(ids)
 	return ids
 }

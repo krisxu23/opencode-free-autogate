@@ -84,6 +84,14 @@ type gatewayUI struct {
 	probeConc         *walk.NumberEdit // 检测并发路数（初检/深检共用）
 	probeModelBox     *walk.ComboBox
 	outboundBox       *walk.ComboBox
+	suppliersEdit     *walk.TextEdit // 通用供应商 JSON（与 SuppliersInput 同口径）
+	autoEdit          *walk.TextEdit // auto 池（pool=m1,m2;... 与 PROXY_AUTO_POOLS 同口径）
+	tabs              *walk.TabWidget
+	m365Status        *walk.Label    // M365 授权状态行
+	m365Callback      *walk.LineEdit // M365 回调地址粘贴框
+	m365Accounts      *walk.TextEdit // M365 账号列表
+	m365DelEdit       *walk.LineEdit // M365 待删除账号（ID 或邮箱）
+	m365PendingState  string         // 进行中的 PKCE state
 	logCursor         int
 	modelsSeen        string
 	poolLiveText      string
@@ -141,10 +149,11 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 				Paint:     ui.paintBanner,
 			},
 			dcl.TabWidget{
-				Font: uiFont,
+				AssignTo: &ui.tabs,
+				Font:     uiFont,
 				Pages: []dcl.TabPage{
 					{
-						Title:  "运行状态",
+						Title:  "总览",
 						Layout: dcl.VBox{Spacing: 8},
 						Children: []dcl.Widget{
 							dcl.GroupBox{
@@ -179,6 +188,106 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 							},
 
 							dcl.GroupBox{
+								Title:  "快捷入口",
+								Font:   uiFont,
+								Layout: dcl.VBox{Spacing: 6},
+								Children: []dcl.Widget{
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.PushButton{Text: "添加 M365 账号", Font: uiFont, OnClicked: func() {
+												ui.gotoTab(3)
+											}},
+											dcl.PushButton{Text: "管理供应商", Font: uiFont, OnClicked: func() {
+												ui.gotoTab(1)
+											}},
+											dcl.PushButton{Text: "模型与 Auto 池", Font: uiFont, OnClicked: func() {
+												ui.gotoTab(2)
+											}},
+											dcl.HSpacer{},
+										},
+									},
+								},
+							},
+						},
+					},
+
+					{
+						Title:  "供应商",
+						Layout: dcl.VBox{Spacing: 8},
+						Children: []dcl.Widget{
+							dcl.GroupBox{
+								Title:  "内置供应商（删不掉的默认项）",
+								Font:   uiFont,
+								Layout: dcl.VBox{Spacing: 6},
+								Children: []dcl.Widget{
+									dcl.Label{Text: "opencode：opencode.ai/zen 免费模型，无需账号，开箱即用。"},
+									dcl.CheckBox{
+										AssignTo: &ui.opencodePoolCheck,
+										Text:     "启用节点池 IP 出口（多 IP 竞速/轮询，失败自动换出口；关闭 = 全部直连）",
+										Checked:  !settings.OpenCodePoolOff,
+									},
+									dcl.Label{Text: "cline：api.cline.bot 反代，OAuth 账号制（账号在下方管理）。"},
+									dcl.CheckBox{
+										AssignTo: &ui.clinePoolCheck,
+										Text:     "启用节点池 IP 出口（池出口按表现轮询 + 直连兜底；默认关闭 = 直连）",
+										Checked:  settings.ClinePoolEnabled,
+									},
+									dcl.Label{Text: "m365：内置 M365 Copilot 引擎（账号在「M365账号」页授权），模型以 m365/ 前缀出现。"},
+								},
+							},
+							dcl.GroupBox{
+								Title:  "通用供应商（OpenAI 兼容，可增删）",
+								Font:   uiFont,
+								Layout: dcl.VBox{Spacing: 6},
+								Children: []dcl.Widget{
+									dcl.Label{Text: "JSON 数组，一项一个：{\"id\",\"name\",\"base_url\",\"api_key\",\"models\",\"enabled\"}。id 不可与 opencode/cline/m365 重名；模型对外显示为 id/模型。改完去「网络与节点池」页保存并重启。"},
+									dcl.TextEdit{
+										AssignTo: &ui.suppliersEdit,
+										Text:     suppliersSeedText(settings),
+										VScroll:  true,
+										MinSize:  dcl.Size{Height: 96},
+										Font:     monoFont,
+									},
+								},
+							},
+							dcl.GroupBox{
+								Title:  "Cline 账号管理",
+								Font:   uiFont,
+								Layout: dcl.VBox{Spacing: 6},
+								Children: []dcl.Widget{
+									dcl.Label{Text: "Cline 免费模型通过 OAuth 账号访问。点击「导入账号」添加 Cline 账号。"},
+									dcl.TextEdit{
+										AssignTo: &ui.clineAccountEdit,
+										ReadOnly: true,
+										VScroll:  true,
+										MinSize:  dcl.Size{Height: 200},
+										Font:     monoFont,
+										Text:     "正在加载…",
+									},
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.PushButton{Text: "导入账号 (OAuth)", Font: uiFont, OnClicked: func() {
+												go ui.clineImportAccount()
+											}},
+											dcl.PushButton{Text: "刷新列表", Font: uiFont, OnClicked: func() {
+												ui.refreshClineAccounts()
+											}},
+											dcl.HSpacer{},
+										},
+									},
+								},
+							},
+							dcl.Label{Text: "提示：Model 字段必须带 cline/ 前缀（如 cline/deepseek-deepseek-v4-flash），网关据此走 Cline 上游。"},
+						},
+					},
+
+					{
+						Title:  "模型与Auto",
+						Layout: dcl.VBox{Spacing: 8},
+						Children: []dcl.Widget{
+							dcl.GroupBox{
 								Title:  "实时免费模型（上游拉取，可直接复制）",
 								Font:   uiFont,
 								Layout: dcl.VBox{Spacing: 6},
@@ -212,16 +321,16 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 							},
 
 							dcl.GroupBox{
-								Title:  "正式节点（复检合格）",
+								Title:  "Auto 池（池内模型坏一个自动切下一个）",
 								Font:   uiFont,
 								Layout: dcl.VBox{Spacing: 6},
 								Children: []dcl.Widget{
-									dcl.Label{Text: "以下节点已通过初检＋复检双重验证，可放心使用；手动节点永不自动移除:"},
+									dcl.Label{Text: "格式 pool=m1,m2;...，成员写 前缀/模型，例如 auto=m365/gpt-5.6-sol,opencode/big-pickle。客户端用 auto 或 auto/池名调用。改完去「网络与节点池」页保存并重启。"},
 									dcl.TextEdit{
-										AssignTo: &ui.poolLive,
-										ReadOnly: true,
+										AssignTo: &ui.autoEdit,
+										Text:     formatAutoPools(settings.AutoPools),
 										VScroll:  true,
-										MinSize:  dcl.Size{Height: 120},
+										MinSize:  dcl.Size{Height: 64},
 										Font:     monoFont,
 									},
 								},
@@ -230,19 +339,76 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 					},
 
 					{
-						Title:  "OpenCode",
+						Title:  "M365账号",
 						Layout: dcl.VBox{Spacing: 8},
 						Children: []dcl.Widget{
 							dcl.GroupBox{
-								Title:  "OpenCode 供应商（opencode.ai/zen · OpenAI/Anthropic/Codex 兼容）",
+								Title:  "添加账号（3 步）",
 								Font:   uiFont,
 								Layout: dcl.VBox{Spacing: 6},
 								Children: []dcl.Widget{
-									dcl.CheckBox{
-										AssignTo: &ui.opencodePoolCheck,
-										Text:     "启用节点池 IP 出口（多 IP 竞速/轮询，失败自动换出口；关闭 = 全部直连）",
-										Checked:  !settings.OpenCodePoolOff,
+									dcl.Label{Text: "1. 点击「开始授权」，弹出窗口打开 Microsoft 登录页，完成登录后回到这里。"},
+									dcl.Label{Text: "2. 登录后弹出页显示空白或错误是正常的：复制弹出页地址栏的完整网址（含 code=... 和 state=...）。"},
+									dcl.Label{Text: "3. 粘贴到下方输入框，点击「粘贴并确认添加」完成授权。"},
+									dcl.PushButton{Text: "1. 开始授权（打开微软登录）", Font: uiFont, OnClicked: func() {
+										go ui.m365StartAuth()
+									}},
+									dcl.Label{Text: "回调地址（粘贴弹出页地址栏的完整网址）:"},
+									dcl.LineEdit{AssignTo: &ui.m365Callback, Font: monoFont},
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.PushButton{Text: "3. 粘贴并确认添加", Font: uiFont, OnClicked: func() {
+												go ui.m365ConfirmAdd()
+											}},
+											dcl.HSpacer{},
+										},
 									},
+									dcl.Label{AssignTo: &ui.m365Status, Text: "尚未开始授权。", Font: uiFont},
+								},
+							},
+							dcl.GroupBox{
+								Title:  "已授权账号",
+								Font:   uiFont,
+								Layout: dcl.VBox{Spacing: 6},
+								Children: []dcl.Widget{
+									dcl.TextEdit{
+										AssignTo: &ui.m365Accounts,
+										ReadOnly: true,
+										VScroll:  true,
+										MinSize:  dcl.Size{Height: 180},
+										Font:     monoFont,
+										Text:     "点击「刷新列表」加载…",
+									},
+									dcl.Composite{
+										Layout: dcl.HBox{MarginsZero: true},
+										Children: []dcl.Widget{
+											dcl.PushButton{Text: "刷新列表", Font: uiFont, OnClicked: func() {
+												go ui.m365RefreshAccounts()
+											}},
+											dcl.Label{Text: "删除账号（填 ID 或邮箱）:"},
+											dcl.LineEdit{AssignTo: &ui.m365DelEdit, Font: monoFont, MinSize: dcl.Size{Width: 200}},
+											dcl.PushButton{Text: "删除", Font: uiFont, OnClicked: func() {
+												go ui.m365DeleteAccount()
+											}},
+											dcl.HSpacer{},
+										},
+									},
+									dcl.Label{Text: "账号库与 Cline 账号同级存放（data/.m365-accounts.json），0600 权限。未设置 M365_MASTER_KEY 时刷新令牌明文落盘，请尽快设置。"},
+								},
+							},
+						},
+					},
+
+					{
+						Title:  "网络与节点池",
+						Layout: dcl.VBox{Spacing: 8},
+						Children: []dcl.Widget{
+							dcl.GroupBox{
+								Title:  "出站与竞速（全局）",
+								Font:   uiFont,
+								Layout: dcl.VBox{Spacing: 6},
+								Children: []dcl.Widget{
 									dcl.Composite{
 										Layout: dcl.HBox{MarginsZero: true},
 										Children: []dcl.Widget{
@@ -311,64 +477,8 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 									},
 								},
 							},
-						},
-					},
-
-					{
-						Title:  "Cline",
-						Layout: dcl.VBox{Spacing: 8},
-						Children: []dcl.Widget{
 							dcl.GroupBox{
-								Title:  "Cline 供应商（api.cline.bot 反代 · OAuth 账号制）",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
-								Children: []dcl.Widget{
-									dcl.CheckBox{
-										AssignTo: &ui.clinePoolCheck,
-										Text:     "启用节点池 IP 出口（最多 3 个池出口按表现轮询 + 直连兜底；默认关闭 = 直连）",
-										Checked:  settings.ClinePoolEnabled,
-									},
-									dcl.Label{Text: "开启后 Cline 聊天请求与 OpenCode 共用同一套出口记账：坏出口两家一起避开。"},
-								},
-							},
-							dcl.GroupBox{
-								Title:  "Cline 账号管理",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
-								Children: []dcl.Widget{
-									dcl.Label{Text: "Cline 免费模型通过 OAuth 账号访问。点击「导入账号」添加 Cline 账号。"},
-									dcl.TextEdit{
-										AssignTo: &ui.clineAccountEdit,
-										ReadOnly: true,
-										VScroll:  true,
-										MinSize:  dcl.Size{Height: 200},
-										Font:     monoFont,
-										Text:     "正在加载…",
-									},
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
-										Children: []dcl.Widget{
-											dcl.PushButton{Text: "导入账号 (OAuth)", Font: uiFont, OnClicked: func() {
-												go ui.clineImportAccount()
-											}},
-											dcl.PushButton{Text: "刷新列表", Font: uiFont, OnClicked: func() {
-												ui.refreshClineAccounts()
-											}},
-											dcl.HSpacer{},
-										},
-									},
-								},
-							},
-							dcl.Label{Text: "提示：Model 字段必须带 cline/ 前缀（如 cline/deepseek-deepseek-v4-flash），网关据此走 Cline 上游。"},
-						},
-					},
-
-					{
-						Title:  "设置",
-						Layout: dcl.VBox{Spacing: 8},
-						Children: []dcl.Widget{
-							dcl.GroupBox{
-								Title:  "超时（全局，两个供应商共用）",
+								Title:  "超时与代理节点（全局）",
 								Font:   uiFont,
 								Layout: dcl.VBox{Spacing: 6},
 								Children: []dcl.Widget{
@@ -383,7 +493,7 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 											dcl.HSpacer{},
 										},
 									},
-									dcl.Label{Text: "代理节点（一行一个；支持 socks5/http、vless://、vmess://、trojan://、ss://、hysteria2://(hy2)、tuic:// 分享链接；手动节点不会被自动删除。全局资源：各供应商页的「节点池出口」开关决定谁使用）:"},
+									dcl.Label{Text: "代理节点（一行一个；支持 socks5/http、vless://、vmess://、trojan://、ss://、hysteria2://(hy2)、tuic:// 分享链接；手动节点不会被自动删除。全局资源：「供应商」页的节点池出口开关决定谁使用）:"},
 									dcl.TextEdit{
 										AssignTo: &ui.proxyEdit,
 										Text:     settings.ProxyInput,
@@ -438,6 +548,21 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 										Text:     settings.PoolInput,
 										VScroll:  true,
 										MinSize:  dcl.Size{Height: 96},
+									},
+								},
+							},
+							dcl.GroupBox{
+								Title:  "正式节点（复检合格）",
+								Font:   uiFont,
+								Layout: dcl.VBox{Spacing: 6},
+								Children: []dcl.Widget{
+									dcl.Label{Text: "以下节点已通过初检＋复检双重验证，可放心使用；手动节点永不自动移除:"},
+									dcl.TextEdit{
+										AssignTo: &ui.poolLive,
+										ReadOnly: true,
+										VScroll:  true,
+										MinSize:  dcl.Size{Height: 120},
+										Font:     monoFont,
 									},
 								},
 							},
@@ -637,7 +762,7 @@ func (ui *gatewayUI) paintBanner(canvas *walk.Canvas, bounds walk.Rectangle) err
 		walk.Rectangle{X: bounds.X + pad, Y: bounds.Y + 9, Width: w - 330, Height: 26}, 0); err != nil {
 		return err
 	}
-	sub := fmt.Sprintf("本地免费网关 · 已运行 %s · OpenCode + Cline 双供应商",
+	sub := fmt.Sprintf("本地网关 · 已运行 %s · OpenCode + Cline + M365",
 		time.Since(ui.start).Round(time.Second))
 	if err := canvas.DrawText(sub, bannerSubFont, walk.RGB(150, 158, 172),
 		walk.Rectangle{X: bounds.X + pad, Y: bounds.Y + 37, Width: w - 330, Height: 20}, 0); err != nil {
@@ -856,6 +981,14 @@ func (ui *gatewayUI) copyText(text, label string) {
 	log.Printf("[界面] 已复制%s", label)
 }
 
+// gotoTab 跳到指定分页（总览快捷入口用）；索引越界时忽略。
+func (ui *gatewayUI) gotoTab(i int) {
+	if ui.tabs == nil {
+		return
+	}
+	_ = ui.tabs.SetCurrentIndex(i)
+}
+
 // collect 读取界面输入，返回规整后的配置与校验报告。
 func (ui *gatewayUI) collect() (uiSettings, string) {
 	next := ui.settings
@@ -892,6 +1025,11 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 		}
 	}
 	next.PreferredRegions = strings.Join(groups, ",")
+	next.SuppliersInput = ui.suppliersEdit.Text()
+	if strings.TrimSpace(next.SuppliersInput) == "" {
+		next.Suppliers = nil // 清空输入框 = 移除全部通用供应商
+	}
+	next.AutoPools = parseAutoPools(ui.autoEdit.Text())
 
 	proxies, proxyErrors := ParseProxyInput(next.ProxyInput)
 	mirrors, mirrorErrors := parseMirrorList(next.MirrorInput)
@@ -952,6 +1090,24 @@ func (ui *gatewayUI) collect() (uiSettings, string) {
 	}
 	if next.Outbound == outboundProxy && len(proxies) == 0 {
 		report.WriteString("\r\n提示：选了“走代理”但没有可用节点，实际仍会直连。")
+	}
+	if suppliers, err := ParseSuppliersJSON(next.SuppliersInput); err != nil {
+		fmt.Fprintf(&report, "\r\n通用供应商：输入有误（%v），保存后将被忽略。", err)
+	} else {
+		enabled := 0
+		for _, s := range suppliers {
+			if s.Enabled {
+				enabled++
+			}
+		}
+		fmt.Fprintf(&report, "\r\n通用供应商：%d 个（启用 %d 个）。", len(suppliers), enabled)
+	}
+	if len(next.AutoPools) == 0 {
+		report.WriteString("\r\nAuto 池：未配置。")
+	} else {
+		for name, members := range next.AutoPools {
+			fmt.Fprintf(&report, "\r\nAuto 池 %s：%d 个模型。", name, len(members))
+		}
 	}
 	return next.normalized(), report.String()
 }

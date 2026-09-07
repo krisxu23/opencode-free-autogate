@@ -29,6 +29,27 @@ func TestSupplierValidate(t *testing.T) {
 	}
 }
 
+func TestFormatAutoPools(t *testing.T) {
+	got := formatAutoPools(map[string][]string{"auto": {"m365/gpt-5.6-sol", "opencode/big-pickle"}})
+	if got != "auto=m365/gpt-5.6-sol,opencode/big-pickle" {
+		t.Fatalf("bad format: %q", got)
+	}
+	if formatAutoPools(nil) != "" {
+		t.Fatal("nil pools must format empty")
+	}
+}
+
+func TestSuppliersSeedText(t *testing.T) {
+	s := defaultSettings()
+	if suppliersSeedText(s) != "[]" {
+		t.Fatal("empty settings must seed []")
+	}
+	s.SuppliersInput = `[{"id":"a"}]`
+	if suppliersSeedText(s) != `[{"id":"a"}]` {
+		t.Fatal("raw input must win")
+	}
+}
+
 func TestParseSuppliersJSON(t *testing.T) {
 	parsed, err := ParseSuppliersJSON(`[{"id":"local-m365","base_url":"http://127.0.0.1:4141/v1","models":["a"]}]`)
 	if err != nil {

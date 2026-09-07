@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -71,4 +72,32 @@ func ParseSuppliersJSON(raw string) ([]Supplier, error) {
 		seen[s.ID] = struct{}{}
 	}
 	return out, nil
+}
+
+// suppliersSeedText 生成供应商编辑框的初始文本：优先回填用户原始输入，
+// 其次序列化已存数组，否则返回空数组（保存后无供应商，零回归）。
+func suppliersSeedText(s uiSettings) string {
+	if input := strings.TrimSpace(s.SuppliersInput); input != "" {
+		return input
+	}
+	if len(s.Suppliers) > 0 {
+		if raw, err := json.MarshalIndent(s.Suppliers, "", "  "); err == nil {
+			return string(raw)
+		}
+	}
+	return "[]"
+}
+
+// formatAutoPools 把 auto 池渲染成 pool=m1,m2;... 文本（与 PROXY_AUTO_POOLS 同口径）。
+func formatAutoPools(pools map[string][]string) string {
+	names := make([]string, 0, len(pools))
+	for name := range pools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, name+"="+strings.Join(pools[name], ","))
+	}
+	return strings.Join(parts, ";")
 }

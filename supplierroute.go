@@ -36,10 +36,14 @@ func parseAutoPools(raw string) map[string][]string {
 }
 
 // lookupSupplier 按 "供应商/模型" 前缀查找启用的通用供应商。
+// m365 是内置供应商（账号库常驻进程，不走 HTTP 上游），优先判定。
 func (g *gateway) lookupSupplier(model string) (Supplier, bool) {
 	supID, _, ok := SplitSupplierPrefix(model)
 	if !ok {
 		return Supplier{}, false
+	}
+	if supID == m365SupplierID {
+		return m365BuiltinSupplier()
 	}
 	for _, s := range g.cfg.suppliers {
 		if s.Enabled && s.ID == supID {
@@ -133,6 +137,10 @@ func (g *gateway) dispatchUnified(ctx context.Context, request upstreamRequest, 
 // dispatchSupplier 把请求发往通用供应商：覆盖上游基址与认证 Key，剥掉
 // 供应商前缀用真模型名；出口竞速/熔断/重试复用既有 dispatch 管道。
 func (g *gateway) dispatchSupplier(ctx context.Context, request upstreamRequest, trace *requestTrace, sup Supplier) (*gatewayResponse, error) {
+	// 内置 M365：不走出网管道，直接交给进程内的 ChatHub 引擎。
+	if sup.ID == m365SupplierID {
+		return g.dispatchM365(ctx, request, trace)
+	}
 	req := request
 	req.upstream = strings.TrimRight(sup.BaseURL, "/")
 	if req.headers == nil {

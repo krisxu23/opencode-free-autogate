@@ -26,12 +26,14 @@ func TestGenericModelsListed(t *testing.T) {
 }
 
 func TestRewriteGenericPrefix(t *testing.T) {
+	// 通用前缀在 rewrite 阶段必须保留：分发链路靠前缀识别供应商与
+	// auto 池成员，真名剥离发生在 dispatchSupplier / dispatchM365。
 	g := &gateway{cfg: config{suppliers: []Supplier{{ID: "local-m365", Enabled: true}}}}
 	payload := map[string]any{"model": "local-m365/gpt-5.6-sol"}
-	if !g.rewriteModelPayload(context.Background(), payload) {
-		t.Fatal("generic prefix must rewrite")
+	if g.rewriteModelPayload(context.Background(), payload) {
+		t.Fatal("generic prefix must be preserved for dispatch")
 	}
-	if payload["model"] != "gpt-5.6-sol" {
-		t.Fatalf("prefix not stripped: %v", payload["model"])
+	if payload["model"] != "local-m365/gpt-5.6-sol" {
+		t.Fatalf("prefix stripped too early: %v", payload["model"])
 	}
 }
