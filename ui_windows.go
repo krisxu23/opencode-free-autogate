@@ -15,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"github.com/lxn/walk"
@@ -158,59 +159,59 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 						Layout: dcl.VBox{Spacing: 0, MarginsZero: true},
 						Children: []dcl.Widget{
 							dcl.ScrollView{
-								Layout: dcl.VBox{Spacing: 4},
+								Layout: dcl.VBox{Spacing: 8},
 								Children: []dcl.Widget{
 									dcl.GroupBox{
 										Title:  "运行状态",
 										Font:   uiFont,
-										Layout: dcl.Grid{Columns: 3},
+										Layout: dcl.Grid{Columns: 3, Spacing: 6},
 										Children: []dcl.Widget{
 											dcl.Label{AssignTo: &ui.headline, Text: "● 启动中…", Font: headlineFont, TextColor: colorIdle, ColumnSpan: 3},
-
 											dcl.Label{AssignTo: &ui.statusLabel, Text: "正在初始化…", Font: uiFont, ColumnSpan: 3},
 
 											dcl.Label{Text: "今日用量:", Font: uiFont},
 											dcl.Label{AssignTo: &ui.usageLabel, Text: "—", Font: monoFont, ColumnSpan: 2},
-
-											dcl.Label{Text: "API 地址:"},
+										},
+									},
+									dcl.GroupBox{
+										Title:  "客户端接入（OpenAI 兼容）",
+										Font:   uiFont,
+										Layout: dcl.Grid{Columns: 3, Spacing: 6},
+										Children: []dcl.Widget{
+											dcl.Label{Text: "API 地址:", Font: uiFont},
 											dcl.LineEdit{AssignTo: &ui.apiEdit, Text: apiBase, ReadOnly: true, Font: monoFont},
 											dcl.PushButton{Text: "复制", Font: uiFont, MaxSize: dcl.Size{Width: 80}, OnClicked: func() {
 												ui.copyText(ui.apiEdit.Text(), "API 地址")
 											}},
 
-											dcl.Label{Text: "默认 Key:"},
+											dcl.Label{Text: "默认 Key:", Font: uiFont},
 											dcl.LineEdit{AssignTo: &ui.keyEdit, Text: settings.GatewayKey, ReadOnly: true, Font: monoFont},
 											dcl.PushButton{Text: "复制", Font: uiFont, MaxSize: dcl.Size{Width: 80}, OnClicked: func() {
 												ui.copyText(ui.keyEdit.Text(), "默认 Key")
 											}},
 
 											dcl.Label{
-												Text:       "设置 GATEWAY_KEY 后启用校验（格式 sk-xxx）。未设置时自动生成随机 Key。兼容路径：/vscode/{key}/v1/chat/completions。",
+												Text:       "设置 GATEWAY_KEY 后启用校验（sk-xxx）。未设置自动生成。兼容路径 /vscode/{key}/v1/chat/completions。",
+												Font:       uiFont,
 												ColumnSpan: 3,
 											},
 										},
 									},
-
 									dcl.GroupBox{
 										Title:  "快捷入口",
 										Font:   uiFont,
-										Layout: dcl.VBox{Spacing: 4},
+										Layout: dcl.HBox{MarginsZero: true, Spacing: 8},
 										Children: []dcl.Widget{
-											dcl.Composite{
-												Layout: dcl.HBox{MarginsZero: true},
-												Children: []dcl.Widget{
-													dcl.PushButton{Text: "添加 M365 账号", Font: uiFont, OnClicked: func() {
-														ui.gotoTab(3)
-													}},
-													dcl.PushButton{Text: "管理供应商", Font: uiFont, OnClicked: func() {
-														ui.gotoTab(1)
-													}},
-													dcl.PushButton{Text: "模型与 Auto 池", Font: uiFont, OnClicked: func() {
-														ui.gotoTab(2)
-													}},
-													dcl.HSpacer{},
-												},
-											},
+											dcl.PushButton{Text: "添加 M365 账号", Font: uiFont, OnClicked: func() {
+												ui.gotoTab(3)
+											}},
+											dcl.PushButton{Text: "管理供应商", Font: uiFont, OnClicked: func() {
+												ui.gotoTab(1)
+											}},
+											dcl.PushButton{Text: "模型与 Auto 池", Font: uiFont, OnClicked: func() {
+												ui.gotoTab(2)
+											}},
+											dcl.HSpacer{},
 										},
 									},
 								},
@@ -359,45 +360,40 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 						Layout: dcl.VBox{Spacing: 0, MarginsZero: true},
 						Children: []dcl.Widget{
 							dcl.ScrollView{
-								Layout: dcl.VBox{Spacing: 4},
+								Layout: dcl.VBox{Spacing: 8},
 								Children: []dcl.Widget{
 									dcl.GroupBox{
-										Title:  "添加账号（3 步）",
+										Title:  "添加账号（PKCE 三步）",
 										Font:   uiFont,
-										Layout: dcl.VBox{Spacing: 4},
+										Layout: dcl.Grid{Columns: 2, Spacing: 6},
 										Children: []dcl.Widget{
-											dcl.Label{Text: "1. 点击「开始授权」，弹出窗口打开 Microsoft 登录页，完成登录后回到这里。"},
-											dcl.Label{Text: "2. 登录后弹出页显示空白或错误是正常的：复制弹出页地址栏的完整网址（含 code=... 和 state=...）。"},
-											dcl.Label{Text: "3. 粘贴到下方输入框，点击「粘贴并确认添加」完成授权。"},
-											dcl.PushButton{Text: "1. 开始授权（打开微软登录）", Font: uiFont, OnClicked: func() {
+											dcl.PushButton{Text: "① 开始授权（打开微软登录）", Font: uiFont, OnClicked: func() {
 												go ui.m365StartAuth()
 											}},
-											dcl.Label{Text: "回调地址（粘贴弹出页地址栏的完整网址）:"},
-											dcl.LineEdit{AssignTo: &ui.m365Callback, Font: monoFont},
-											dcl.Composite{
-												Layout: dcl.HBox{MarginsZero: true},
-												Children: []dcl.Widget{
-												dcl.PushButton{Text: "3. 粘贴并确认添加", Font: uiFont, OnClicked: func() {
-													// OnClicked 跑在 UI 线程：直接读框，不经跨线程回读。
-													cb, batchPeek := "", ""
-													if ui.m365Callback != nil {
-														cb = ui.m365Callback.Text()
-													}
-													if ui.m365BatchEdit != nil {
-														batchPeek = ui.m365BatchEdit.Text()
-													}
-													go ui.m365ConfirmAdd(strings.TrimSpace(cb), batchPeek)
-												}},
-													dcl.HSpacer{},
-												},
-											},
+											dcl.Label{Text: "弹窗里登录微软账号", Font: uiFont},
+
+											dcl.Label{Text: "② 回调地址（粘贴弹窗地址栏完整网址，含 code=...）:", Font: uiFont, ColumnSpan: 2},
+											dcl.LineEdit{AssignTo: &ui.m365Callback, Font: monoFont, ColumnSpan: 2},
+											dcl.Label{Text: "③ 登录后弹窗显示空白/报错是正常的——复制地址栏 URL 粘贴到上面", Font: uiFont, ColumnSpan: 2},
+
+											dcl.PushButton{Text: "③ 确认添加", Font: uiFont, OnClicked: func() {
+												// OnClicked 跑在 UI 线程：直接读框，不经跨线程回读。
+												cb, batchPeek := "", ""
+												if ui.m365Callback != nil {
+													cb = ui.m365Callback.Text()
+												}
+												if ui.m365BatchEdit != nil {
+													batchPeek = ui.m365BatchEdit.Text()
+												}
+												go ui.m365ConfirmAdd(strings.TrimSpace(cb), batchPeek)
+											}},
 											dcl.Label{AssignTo: &ui.m365Status, Text: "尚未开始授权。", Font: uiFont},
 										},
 									},
 									dcl.GroupBox{
 										Title:  "密码直授（ROPC，多账号批量）",
 										Font:   uiFont,
-										Layout: dcl.VBox{Spacing: 4},
+										Layout: dcl.VBox{Spacing: 6},
 										Children: []dcl.Widget{
 											dcl.Label{Text: "一行一个：邮箱,密码。仅未开 MFA、非联合认证的组织账号可用；个人号/MFA 号会被微软拒绝（届时用上方 PKCE）。密码只换 token 用，不落盘。"},
 											dcl.TextEdit{
@@ -409,16 +405,16 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 											dcl.Composite{
 												Layout: dcl.HBox{MarginsZero: true},
 												Children: []dcl.Widget{
-												dcl.PushButton{Text: "批量密码授权", Font: uiFont, OnClicked: func() {
-													raw, cbPeek := "", ""
-													if ui.m365BatchEdit != nil {
-														raw = ui.m365BatchEdit.Text()
-													}
-													if ui.m365Callback != nil {
-														cbPeek = ui.m365Callback.Text()
-													}
-													go ui.m365BatchProvision(raw, cbPeek)
-												}},
+													dcl.PushButton{Text: "批量密码授权", Font: uiFont, OnClicked: func() {
+														raw, cbPeek := "", ""
+														if ui.m365BatchEdit != nil {
+															raw = ui.m365BatchEdit.Text()
+														}
+														if ui.m365Callback != nil {
+															cbPeek = ui.m365Callback.Text()
+														}
+														go ui.m365BatchProvision(raw, cbPeek)
+													}},
 													dcl.HSpacer{},
 												},
 											},
@@ -427,7 +423,7 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 									dcl.GroupBox{
 										Title:  "已授权账号",
 										Font:   uiFont,
-										Layout: dcl.VBox{Spacing: 4},
+										Layout: dcl.VBox{Spacing: 6},
 										Children: []dcl.Widget{
 											dcl.TextEdit{
 												AssignTo: &ui.m365Accounts,
@@ -438,24 +434,24 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 												Text:     "点击「刷新列表」加载…",
 											},
 											dcl.Composite{
-												Layout: dcl.HBox{MarginsZero: true},
+												Layout: dcl.HBox{MarginsZero: true, Spacing: 6},
 												Children: []dcl.Widget{
 													dcl.PushButton{Text: "刷新列表", Font: uiFont, OnClicked: func() {
 														go ui.m365RefreshAccounts()
 													}},
-													dcl.Label{Text: "删除账号（填 ID 或邮箱）:"},
-													dcl.LineEdit{AssignTo: &ui.m365DelEdit, Font: monoFont, MinSize: dcl.Size{Width: 200}},
-												dcl.PushButton{Text: "删除", Font: uiFont, OnClicked: func() {
-													target := ""
-													if ui.m365DelEdit != nil {
-														target = strings.TrimSpace(ui.m365DelEdit.Text())
-													}
-													go ui.m365DeleteAccount(target)
-												}},
+													dcl.Label{Text: "删除账号（ID 或邮箱）:"},
+													dcl.LineEdit{AssignTo: &ui.m365DelEdit, Font: monoFont, MinSize: dcl.Size{Width: 180}},
+													dcl.PushButton{Text: "删除", Font: uiFont, OnClicked: func() {
+														target := ""
+														if ui.m365DelEdit != nil {
+															target = strings.TrimSpace(ui.m365DelEdit.Text())
+														}
+														go ui.m365DeleteAccount(target)
+													}},
 													dcl.HSpacer{},
 												},
 											},
-											dcl.Label{Text: "账号库与 Cline 账号同级存放（data/.m365-accounts.json），0600 权限。未设置 M365_MASTER_KEY 时刷新令牌明文落盘，请尽快设置。"},
+											dcl.Label{Text: "账号库存于 data/.m365-accounts.json（0600）。未设置 M365_MASTER_KEY 时刷新令牌明文落盘，请尽快设置。"},
 										},
 									},
 								},
@@ -650,10 +646,21 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 						Title:  "实时日志",
 						Layout: dcl.VBox{Spacing: 4},
 						Children: []dcl.Widget{
+							dcl.Composite{
+								Layout: dcl.HBox{MarginsZero: true, Spacing: 6},
+								Children: []dcl.Widget{
+									dcl.PushButton{Text: "全选 (Ctrl+A)", Font: uiFont, OnClicked: ui.selectAllLogs},
+									dcl.PushButton{Text: "复制选中", Font: uiFont, OnClicked: ui.copySelectedLogs},
+									dcl.PushButton{Text: "复制全部", Font: uiFont, OnClicked: ui.copyAllLogs},
+									dcl.PushButton{Text: "清屏", Font: uiFont, OnClicked: ui.clearLogs},
+									dcl.HSpacer{},
+								},
+							},
 							dcl.ListBox{
-								AssignTo: &ui.logList,
-								Font:     monoFont,
-								MinSize:  dcl.Size{Height: 280},
+								AssignTo:       &ui.logList,
+								Font:           monoFont,
+								MinSize:        dcl.Size{Height: 280},
+								MultiSelection: true,
 							},
 						},
 					},
@@ -928,6 +935,10 @@ func (ui *gatewayUI) pumpLogs() {
 	top := int(win.SendMessage(hwnd, win.LB_GETTOPINDEX, 0, 0))
 	follow := top == 0
 
+	// 顶部插入 N 行会把既有行整体下移 N 位，用户已选中的行跟着位移——
+	// 先取走选中索引，插完按位移量补偿回去，选中内容不丢。
+	selBefore := ui.logList.SelectedIndexes()
+
 	// 逐行插入到顶部：从后往前插，批内保持原序（新批整体在最上、批内正序，
 	// 与旧版倒序展示一致）。LB_INSERTSTRING 只重绘新增行区域。
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -936,8 +947,24 @@ func (ui *gatewayUI) pumpLogs() {
 	}
 
 	// 行数上限：从尾部删除最旧的行（仅在超限时，低频）。
+	trimmed := 0
 	for n := int(win.SendMessage(hwnd, win.LB_GETCOUNT, 0, 0)); n > logListMax; n-- {
 		win.SendMessage(hwnd, win.LB_DELETESTRING, uintptr(n-1), 0)
+		trimmed++
+	}
+
+	// 补偿选中：旧行整体下移 len(lines)，尾部裁掉的选中项直接舍弃。
+	if len(selBefore) > 0 {
+		shifted := make([]int, 0, len(selBefore))
+		for _, i := range selBefore {
+			j := i + len(lines)
+			if j < int(win.SendMessage(hwnd, win.LB_GETCOUNT, 0, 0)) {
+				shifted = append(shifted, j)
+			}
+		}
+		if len(shifted) > 0 {
+			ui.logList.SetSelectedIndexes(shifted)
+		}
 	}
 
 	// 已下滚：内容整体下移 len(lines) 行，视口补回原位（SETTOPINDEX 自动
@@ -946,6 +973,87 @@ func (ui *gatewayUI) pumpLogs() {
 		win.SendMessage(hwnd, win.LB_SETTOPINDEX, uintptr(top+len(lines)), 0)
 	}
 }
+
+// selectAllLogs 全选日志（Ctrl+A 等价）。LB_SETSEL wParam=TRUE lParam=-1
+// 是 Win32 标准的"全选所有项"写法，仅在多选样式（LBS_EXTENDEDSEL）下生效。
+func (ui *gatewayUI) selectAllLogs() {
+	if ui.logList == nil {
+		return
+	}
+	hwnd := ui.logList.Handle()
+	if int(win.SendMessage(hwnd, win.LB_GETCOUNT, 0, 0)) < 1 {
+		return
+	}
+	win.SendMessage(hwnd, win.LB_SETSEL, uintptr(1), ^uintptr(0))
+}
+
+// selectedLogLines 返回选中项的文本（列表序 = 显示顺序：最新在前）。
+func (ui *gatewayUI) selectedLogLines() []string {
+	if ui.logList == nil {
+		return nil
+	}
+	indexes := ui.logList.SelectedIndexes()
+	if len(indexes) == 0 {
+		return nil
+	}
+	hwnd := ui.logList.Handle()
+	out := make([]string, 0, len(indexes))
+	for _, i := range indexes {
+		n := int(win.SendMessage(hwnd, win.LB_GETTEXTLEN, uintptr(i), 0))
+		if n <= 0 {
+			continue
+		}
+		buf := make([]uint16, n+1)
+		// LB_ERR 是 -1：SendMessage 返回 uintptr，需转 int64 再比较。
+		if int64(win.SendMessage(hwnd, win.LB_GETTEXT, uintptr(i), uintptr(unsafe.Pointer(&buf[0])))) < 0 {
+			continue
+		}
+		out = append(out, utf16ToString(buf))
+	}
+	return out
+}
+
+// utf16ToString 把 UTF-16LE 缓冲转成 Go 字符串（结尾 0 截断）。
+func utf16ToString(buf []uint16) string {
+	end := len(buf)
+	for i, v := range buf {
+		if v == 0 {
+			end = i
+			break
+		}
+	}
+	return string(utf16.Decode(buf[:end]))
+}
+
+// copySelectedLogs 复制选中行；未选中任何行时提示。
+func (ui *gatewayUI) copySelectedLogs() {
+	lines := ui.selectedLogLines()
+	if len(lines) == 0 {
+		log.Printf("[界面] 没有选中任何日志行")
+		return
+	}
+	ui.copyText(strings.Join(lines, "\r\n"), fmt.Sprintf("%d 行日志", len(lines)))
+}
+
+// copyAllLogs 复制环形缓冲里的全部日志（最多 1500 行，不受界面裁剪影响）。
+func (ui *gatewayUI) copyAllLogs() {
+	lines, _ := uiLog.Since(0)
+	if len(lines) == 0 {
+		log.Printf("[界面] 日志缓冲为空")
+		return
+	}
+	ui.copyText(strings.Join(lines, "\r\n"), fmt.Sprintf("全部 %d 行日志", len(lines)))
+}
+
+// clearLogs 清空日志列表（只清界面显示，环形缓冲与文件日志不受影响）。
+func (ui *gatewayUI) clearLogs() {
+	if ui.logList == nil {
+		return
+	}
+	ui.logList.SendMessage(win.LB_RESETCONTENT, 0, 0)
+	log.Printf("[界面] 日志视图已清空（文件日志不受影响）")
+}
+
 
 func (ui *gatewayUI) refreshStatus() {
 	gw := ui.app.gateway

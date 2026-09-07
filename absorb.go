@@ -35,20 +35,48 @@ func streamComplete(data []byte) bool {
 type absorbDispatcher func(context.Context, upstreamRequest, *requestTrace) (*gatewayResponse, error)
 
 // dispatchAbsorb 是吸收模式入口：handlePost 对开启该功能的流式请求改走这里。
-// 内部调度使用 dispatchModelChain：模型级限流时换模型继续吸收，而不是
-// 傻等同一模型的额度恢复（限流风暴场景下换模型是唯一出路）。
+// 内部调度使用 dispatchUnified：供应商前缀（m365/cline/通用）请求直通各自
+// 通道，其余请求保留模型级 fallback（限流时换模型继续吸收，而不是傻等
+// 同一模型的额度恢复）。
 // 吸收产物缓存（P2-10，借鉴 ferro responsecache）：命中时直接回放完整
 // 响应体，省一次上游调用与免费额度。
 func (g *gateway) dispatchAbsorb(ctx context.Context, request upstreamRequest, trace *requestTrace) (*gatewayResponse, error) {
+	// 供应商请求隔离：m365/cline/通用供应商有自己的独立通道（账号、
+	// 出口、重试语义各不相同），节点池/竞速/吸收这套 opencode.ai 专属
+	// 管道对它们既无意义也可能有害——一律直通分发，不进吸收循环。
+	if g.isSupplierRouted(request) {
+		log.Printf("[吸收]%s 供应商请求直通，不进吸收循环", trace.tagString())
+		return g.dispatchUnified(ctx, request, trace)
+	}
 	// 查缓存：仅在吸收已开启时生效，缓存层不关心 stream 形态。
 	if cached := g.lookupAbsorbResult(request); cached != nil {
 		return cached, nil
 	}
-	resp, err := g.dispatchAbsorbWith(ctx, request, trace, g.dispatchModelChain)
+	resp, err := g.dispatchAbsorbWith(ctx, request, trace, g.dispatchUnified)
 	if err == nil && resp != nil && resp.live == nil {
 		g.storeAbsorbResult(request, resp)
 	}
 	return resp, err
+}
+
+// isSupplierRouted 报告请求是否属于供应商路由（m365/内置或已配置的
+// cline/通用前缀）。这类请求的分发由 dispatchUnified 全权接管。
+func (g *gateway) isSupplierRouted(request upstreamRequest) bool {
+	supID, _, ok := SplitSupplierPrefix(requestModelName(request))
+	if !ok {
+		return false
+	}
+	if supID == m365SupplierID {
+		// m365 可用性取决于账号库（m365BuiltinSupplier 内部同款判定）。
+		_, available := m365BuiltinSupplier()
+		return available
+	}
+	for _, s := range g.cfg.suppliers {
+		if s.Enabled && s.ID == supID {
+			return true
+		}
+	}
+	return false
 }
 
 // dispatchAbsorbWith 反复调用 dispatch 直到拿到完整流或耗尽尝试/预算：

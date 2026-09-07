@@ -95,3 +95,47 @@ func TestDispatchAbsorbRetryableThenSuccess(t *testing.T) {
 		t.Fatalf("5xx 后应换道重试成功：hits=%d err=%v body=%q", hits, err, resp.body)
 	}
 }
+
+// 供应商请求必须绕过吸收循环：m365/（有账号时）与已启用通用供应商
+// 前缀请求直通独立通道，绝不发往 opencode.ai 上游（节点池/竞速/吸收
+// 是 opencode.ai 专属管道）。
+func TestDispatchAbsorbBypassesSupplierRequests(t *testing.T) {
+	g := newGateway(config{
+		absorbAttempts: 3,
+		suppliers: []Supplier{{
+			ID: "local-m365", Name: "Local", BaseURL: "http://127.0.0.1:9/v1",
+			Models: []string{"gpt-5.6-sol"}, Enabled: true,
+		}},
+	})
+	for _, tc := range []struct {
+		name, model string
+		bypass      bool
+	}{
+		{"通用供应商前缀", "local-m365/gpt-5.6-sol", true},
+		{"未知前缀", "other/model", false},
+		{"无前缀 opencode 模型", "big-pickle", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := upstreamRequest{stream: true, body: []byte(`{"model":"` + tc.model + `","messages":[{"role":"user","content":"hi"}]}`)}
+			if got := g.isSupplierRouted(req); got != tc.bypass {
+				t.Fatalf("isSupplierRouted(%q) = %v, 期望 %v", tc.model, got, tc.bypass)
+			}
+		})
+	}
+}
+
+// 吸收缓存只存 2xx：错误响应（401 等）不得缓存回放，否则一次失败
+// 会在 TTL 内被放大成所有重试都秒回同一错误。
+func TestAbsorbCacheSkipsNon2xx(t *testing.T) {
+	g := newGateway(config{absorbCacheTTL: time.Minute})
+	g.absorbCache = newAbsorbCache(time.Minute)
+	req := upstreamRequest{body: []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)}
+	g.storeAbsorbResult(req, &gatewayResponse{status: http.StatusUnauthorized, header: http.Header{}, body: []byte(`{"error":"401"}`)})
+	if cached := g.lookupAbsorbResult(req); cached != nil {
+		t.Fatalf("401 不应被缓存，却命中了: status=%d", cached.status)
+	}
+	g.storeAbsorbResult(req, &gatewayResponse{status: http.StatusOK, header: http.Header{}, body: []byte(`{"ok":1}`)})
+	if cached := g.lookupAbsorbResult(req); cached == nil || cached.status != http.StatusOK {
+		t.Fatalf("200 应被缓存命中，得到 %v", cached)
+	}
+}

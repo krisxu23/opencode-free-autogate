@@ -188,8 +188,14 @@ func (c *absorbCache) store(key string, status int, header http.Header, body []b
 }
 
 // storeAbsorbResult 吸收成功后缓存（调用方在验证完整后调用）。
+// 仅 2xx 落缓存：见函数体内注释。
 func (g *gateway) storeAbsorbResult(request upstreamRequest, resp *gatewayResponse) {
 	if g.absorbCache == nil || resp == nil || resp.live != nil {
+		return
+	}
+	// 只缓存 2xx 成功产物：错误响应（401/429/5xx）大概率瞬态，缓存回放
+	// 会把一次失败放大成 TTL 内所有重试都秒回同一错误，掩盖真实上游状态。
+	if resp.status < 200 || resp.status > 299 {
 		return
 	}
 	key := cacheKeyForRequest(parseJSONObject(request.body))
