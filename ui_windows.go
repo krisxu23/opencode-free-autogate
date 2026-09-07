@@ -138,14 +138,14 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 		Title:    "opencode-free-autogate",
 		Icon:     appIcon,
 		Font:     uiFont,
-		MinSize:  dcl.Size{Width: 760, Height: 460},
-		Size:     dcl.Size{Width: 820, Height: 560},
-		Layout:   dcl.VBox{Spacing: 10, Margins: dcl.Margins{Left: 14, Top: 12, Right: 14, Bottom: 12}},
+		MinSize:  dcl.Size{Width: 720, Height: 440},
+		Size:     dcl.Size{Width: 800, Height: 540},
+		Layout:   dcl.VBox{Spacing: 6, Margins: dcl.Margins{Left: 10, Top: 8, Right: 10, Bottom: 8}},
 		Children: []dcl.Widget{
 			dcl.CustomWidget{
 				AssignTo:  &ui.banner,
-				MinSize:   dcl.Size{Height: 66},
-				MaxSize:   dcl.Size{Height: 66},
+				MinSize:   dcl.Size{Height: 52},
+				MaxSize:   dcl.Size{Height: 52},
 				PaintMode: dcl.PaintBuffered,
 				Paint:     ui.paintBanner,
 			},
@@ -155,57 +155,62 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 				Pages: []dcl.TabPage{
 					{
 						Title:  "总览",
-						Layout: dcl.VBox{Spacing: 8},
+						Layout: dcl.VBox{Spacing: 0, MarginsZero: true},
 						Children: []dcl.Widget{
-							dcl.GroupBox{
-								Title:  "运行状态",
-								Font:   uiFont,
-								Layout: dcl.Grid{Columns: 3},
+							dcl.ScrollView{
+								Layout: dcl.VBox{Spacing: 4},
 								Children: []dcl.Widget{
-									dcl.Label{AssignTo: &ui.headline, Text: "● 启动中…", Font: headlineFont, TextColor: colorIdle, ColumnSpan: 3},
-
-									dcl.Label{AssignTo: &ui.statusLabel, Text: "正在初始化…", Font: uiFont, ColumnSpan: 3},
-
-									dcl.Label{Text: "今日用量:", Font: uiFont},
-									dcl.Label{AssignTo: &ui.usageLabel, Text: "—", Font: monoFont, ColumnSpan: 2},
-
-									dcl.Label{Text: "API 地址:"},
-									dcl.LineEdit{AssignTo: &ui.apiEdit, Text: apiBase, ReadOnly: true, Font: monoFont},
-									dcl.PushButton{Text: "复制", Font: uiFont, MaxSize: dcl.Size{Width: 80}, OnClicked: func() {
-										ui.copyText(ui.apiEdit.Text(), "API 地址")
-									}},
-
-									dcl.Label{Text: "默认 Key:"},
-									dcl.LineEdit{AssignTo: &ui.keyEdit, Text: settings.GatewayKey, ReadOnly: true, Font: monoFont},
-									dcl.PushButton{Text: "复制", Font: uiFont, MaxSize: dcl.Size{Width: 80}, OnClicked: func() {
-										ui.copyText(ui.keyEdit.Text(), "默认 Key")
-									}},
-
-									dcl.Label{
-										Text:       "设置 GATEWAY_KEY 后启用校验（格式 sk-xxx）。未设置时自动生成随机 Key。兼容路径：/vscode/{key}/v1/chat/completions。",
-										ColumnSpan: 3,
-									},
-								},
-							},
-
-							dcl.GroupBox{
-								Title:  "快捷入口",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
-								Children: []dcl.Widget{
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
+									dcl.GroupBox{
+										Title:  "运行状态",
+										Font:   uiFont,
+										Layout: dcl.Grid{Columns: 3},
 										Children: []dcl.Widget{
-											dcl.PushButton{Text: "添加 M365 账号", Font: uiFont, OnClicked: func() {
-												ui.gotoTab(3)
+											dcl.Label{AssignTo: &ui.headline, Text: "● 启动中…", Font: headlineFont, TextColor: colorIdle, ColumnSpan: 3},
+
+											dcl.Label{AssignTo: &ui.statusLabel, Text: "正在初始化…", Font: uiFont, ColumnSpan: 3},
+
+											dcl.Label{Text: "今日用量:", Font: uiFont},
+											dcl.Label{AssignTo: &ui.usageLabel, Text: "—", Font: monoFont, ColumnSpan: 2},
+
+											dcl.Label{Text: "API 地址:"},
+											dcl.LineEdit{AssignTo: &ui.apiEdit, Text: apiBase, ReadOnly: true, Font: monoFont},
+											dcl.PushButton{Text: "复制", Font: uiFont, MaxSize: dcl.Size{Width: 80}, OnClicked: func() {
+												ui.copyText(ui.apiEdit.Text(), "API 地址")
 											}},
-											dcl.PushButton{Text: "管理供应商", Font: uiFont, OnClicked: func() {
-												ui.gotoTab(1)
+
+											dcl.Label{Text: "默认 Key:"},
+											dcl.LineEdit{AssignTo: &ui.keyEdit, Text: settings.GatewayKey, ReadOnly: true, Font: monoFont},
+											dcl.PushButton{Text: "复制", Font: uiFont, MaxSize: dcl.Size{Width: 80}, OnClicked: func() {
+												ui.copyText(ui.keyEdit.Text(), "默认 Key")
 											}},
-											dcl.PushButton{Text: "模型与 Auto 池", Font: uiFont, OnClicked: func() {
-												ui.gotoTab(2)
-											}},
-											dcl.HSpacer{},
+
+											dcl.Label{
+												Text:       "设置 GATEWAY_KEY 后启用校验（格式 sk-xxx）。未设置时自动生成随机 Key。兼容路径：/vscode/{key}/v1/chat/completions。",
+												ColumnSpan: 3,
+											},
+										},
+									},
+
+									dcl.GroupBox{
+										Title:  "快捷入口",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
+										Children: []dcl.Widget{
+											dcl.Composite{
+												Layout: dcl.HBox{MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.PushButton{Text: "添加 M365 账号", Font: uiFont, OnClicked: func() {
+														ui.gotoTab(3)
+													}},
+													dcl.PushButton{Text: "管理供应商", Font: uiFont, OnClicked: func() {
+														ui.gotoTab(1)
+													}},
+													dcl.PushButton{Text: "模型与 Auto 池", Font: uiFont, OnClicked: func() {
+														ui.gotoTab(2)
+													}},
+													dcl.HSpacer{},
+												},
+											},
 										},
 									},
 								},
@@ -215,124 +220,134 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 
 					{
 						Title:  "供应商",
-						Layout: dcl.VBox{Spacing: 8},
+						Layout: dcl.VBox{Spacing: 0, MarginsZero: true},
 						Children: []dcl.Widget{
-							dcl.GroupBox{
-								Title:  "内置供应商（删不掉的默认项）",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
+							dcl.ScrollView{
+								Layout: dcl.VBox{Spacing: 4},
 								Children: []dcl.Widget{
-									dcl.Label{Text: "opencode：opencode.ai/zen 免费模型，无需账号，开箱即用。"},
-									dcl.CheckBox{
-										AssignTo: &ui.opencodePoolCheck,
-										Text:     "启用节点池 IP 出口（多 IP 竞速/轮询，失败自动换出口；关闭 = 全部直连）",
-										Checked:  !settings.OpenCodePoolOff,
-									},
-									dcl.Label{Text: "cline：api.cline.bot 反代，OAuth 账号制（账号在下方管理）。"},
-									dcl.CheckBox{
-										AssignTo: &ui.clinePoolCheck,
-										Text:     "启用节点池 IP 出口（池出口按表现轮询 + 直连兜底；默认关闭 = 直连）",
-										Checked:  settings.ClinePoolEnabled,
-									},
-									dcl.Label{Text: "m365：内置 M365 Copilot 引擎（账号在「M365账号」页授权），模型以 m365/ 前缀出现。"},
-								},
-							},
-							dcl.GroupBox{
-								Title:  "通用供应商（OpenAI 兼容，可增删）",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
-								Children: []dcl.Widget{
-									dcl.Label{Text: "JSON 数组，一项一个：{\"id\",\"name\",\"base_url\",\"api_key\",\"models\",\"enabled\"}。id 不可与 opencode/cline/m365 重名；模型对外显示为 id/模型。改完去「网络与节点池」页保存并重启。"},
-									dcl.TextEdit{
-										AssignTo: &ui.suppliersEdit,
-										Text:     suppliersSeedText(settings),
-										VScroll:  true,
-										MinSize:  dcl.Size{Height: 96},
-										Font:     monoFont,
-									},
-								},
-							},
-							dcl.GroupBox{
-								Title:  "Cline 账号管理",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
-								Children: []dcl.Widget{
-									dcl.Label{Text: "Cline 免费模型通过 OAuth 账号访问。点击「导入账号」添加 Cline 账号。"},
-									dcl.TextEdit{
-										AssignTo: &ui.clineAccountEdit,
-										ReadOnly: true,
-										VScroll:  true,
-										MinSize:  dcl.Size{Height: 200},
-										Font:     monoFont,
-										Text:     "正在加载…",
-									},
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
+									dcl.GroupBox{
+										Title:  "内置供应商（删不掉的默认项）",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
 										Children: []dcl.Widget{
-											dcl.PushButton{Text: "导入账号 (OAuth)", Font: uiFont, OnClicked: func() {
-												go ui.clineImportAccount()
-											}},
-											dcl.PushButton{Text: "刷新列表", Font: uiFont, OnClicked: func() {
-												ui.refreshClineAccounts()
-											}},
-											dcl.HSpacer{},
+											dcl.Label{Text: "opencode：opencode.ai/zen 免费模型，无需账号，开箱即用。"},
+											dcl.CheckBox{
+												AssignTo: &ui.opencodePoolCheck,
+												Text:     "启用节点池 IP 出口（多 IP 竞速/轮询，失败自动换出口；关闭 = 全部直连）",
+												Checked:  !settings.OpenCodePoolOff,
+											},
+											dcl.Label{Text: "cline：api.cline.bot 反代，OAuth 账号制（账号在下方管理）。"},
+											dcl.CheckBox{
+												AssignTo: &ui.clinePoolCheck,
+												Text:     "启用节点池 IP 出口（池出口按表现轮询 + 直连兜底；默认关闭 = 直连）",
+												Checked:  settings.ClinePoolEnabled,
+											},
+											dcl.Label{Text: "m365：内置 M365 Copilot 引擎（账号在「M365账号」页授权），模型以 m365/ 前缀出现。"},
 										},
 									},
+									dcl.GroupBox{
+										Title:  "通用供应商（OpenAI 兼容，可增删）",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
+										Children: []dcl.Widget{
+											dcl.Label{Text: "JSON 数组，一项一个：{\"id\",\"name\",\"base_url\",\"api_key\",\"models\",\"enabled\"}。id 不可与 opencode/cline/m365 重名；模型对外显示为 id/模型。改完去「网络与节点池」页保存并重启。"},
+											dcl.TextEdit{
+												AssignTo: &ui.suppliersEdit,
+												Text:     suppliersSeedText(settings),
+												VScroll:  true,
+												MinSize:  dcl.Size{Height: 68},
+												Font:     monoFont,
+											},
+										},
+									},
+									dcl.GroupBox{
+										Title:  "Cline 账号管理",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
+										Children: []dcl.Widget{
+											dcl.Label{Text: "Cline 免费模型通过 OAuth 账号访问。点击「导入账号」添加 Cline 账号。"},
+											dcl.TextEdit{
+												AssignTo: &ui.clineAccountEdit,
+												ReadOnly: true,
+												VScroll:  true,
+												MinSize:  dcl.Size{Height: 120},
+												Font:     monoFont,
+												Text:     "正在加载…",
+											},
+											dcl.Composite{
+												Layout: dcl.HBox{MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.PushButton{Text: "导入账号 (OAuth)", Font: uiFont, OnClicked: func() {
+														go ui.clineImportAccount()
+													}},
+													dcl.PushButton{Text: "刷新列表", Font: uiFont, OnClicked: func() {
+														ui.refreshClineAccounts()
+													}},
+													dcl.HSpacer{},
+												},
+											},
+										},
+									},
+									dcl.Label{Text: "提示：Model 字段必须带 cline/ 前缀（如 cline/deepseek-deepseek-v4-flash），网关据此走 Cline 上游。"},
 								},
 							},
-							dcl.Label{Text: "提示：Model 字段必须带 cline/ 前缀（如 cline/deepseek-deepseek-v4-flash），网关据此走 Cline 上游。"},
 						},
 					},
 
 					{
 						Title:  "模型与Auto",
-						Layout: dcl.VBox{Spacing: 8},
+						Layout: dcl.VBox{Spacing: 0, MarginsZero: true},
 						Children: []dcl.Widget{
-							dcl.GroupBox{
-								Title:  "实时免费模型（上游拉取，可直接复制）",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
+							dcl.ScrollView{
+								Layout: dcl.VBox{Spacing: 4},
 								Children: []dcl.Widget{
-									dcl.TextEdit{
-										AssignTo: &ui.modelsEdit,
-										ReadOnly: true,
-										VScroll:  true,
-										MinSize:  dcl.Size{Height: 96},
-										Font:     monoFont,
-										Text:     "正在获取…",
-									},
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
+									dcl.GroupBox{
+										Title:  "实时免费模型（上游拉取，可直接复制）",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
 										Children: []dcl.Widget{
-											dcl.PushButton{Text: "复制全部模型名", Font: uiFont, OnClicked: func() {
-												ui.copyText(ui.modelsEdit.Text(), "模型列表")
-											}},
-											dcl.PushButton{Text: "刷新 Cline 模型", Font: uiFont, OnClicked: func() {
-												go func() {
-													refreshClineModels()
-													ui.window.Synchronize(func() {
-														ui.modelsSeen = ""
-													})
-												}()
-											}},
-											dcl.HSpacer{},
+											dcl.TextEdit{
+												AssignTo: &ui.modelsEdit,
+												ReadOnly: true,
+												VScroll:  true,
+												MinSize:  dcl.Size{Height: 68},
+												Font:     monoFont,
+												Text:     "正在获取…",
+											},
+											dcl.Composite{
+												Layout: dcl.HBox{MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.PushButton{Text: "复制全部模型名", Font: uiFont, OnClicked: func() {
+														ui.copyText(ui.modelsEdit.Text(), "模型列表")
+													}},
+													dcl.PushButton{Text: "刷新 Cline 模型", Font: uiFont, OnClicked: func() {
+														go func() {
+															refreshClineModels()
+															ui.window.Synchronize(func() {
+																ui.modelsSeen = ""
+															})
+														}()
+													}},
+													dcl.HSpacer{},
+												},
+											},
 										},
 									},
-								},
-							},
 
-							dcl.GroupBox{
-								Title:  "Auto 池（池内模型坏一个自动切下一个）",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
-								Children: []dcl.Widget{
-									dcl.Label{Text: "格式 pool=m1,m2;...，成员写 前缀/模型，例如 auto=m365/gpt-5.6-sol,opencode/big-pickle。客户端用 auto 或 auto/池名调用。改完去「网络与节点池」页保存并重启。"},
-									dcl.TextEdit{
-										AssignTo: &ui.autoEdit,
-										Text:     formatAutoPools(settings.AutoPools),
-										VScroll:  true,
-										MinSize:  dcl.Size{Height: 64},
-										Font:     monoFont,
+									dcl.GroupBox{
+										Title:  "Auto 池（池内模型坏一个自动切下一个）",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
+										Children: []dcl.Widget{
+											dcl.Label{Text: "格式 pool=m1,m2;...，成员写 前缀/模型，例如 auto=m365/gpt-5.6-sol,opencode/big-pickle。客户端用 auto 或 auto/池名调用。改完去「网络与节点池」页保存并重启。"},
+											dcl.TextEdit{
+												AssignTo: &ui.autoEdit,
+												Text:     formatAutoPools(settings.AutoPools),
+												VScroll:  true,
+												MinSize:  dcl.Size{Height: 52},
+												Font:     monoFont,
+											},
+										},
 									},
 								},
 							},
@@ -341,84 +356,89 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 
 					{
 						Title:  "M365账号",
-						Layout: dcl.VBox{Spacing: 8},
+						Layout: dcl.VBox{Spacing: 0, MarginsZero: true},
 						Children: []dcl.Widget{
-							dcl.GroupBox{
-								Title:  "添加账号（3 步）",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
+							dcl.ScrollView{
+								Layout: dcl.VBox{Spacing: 4},
 								Children: []dcl.Widget{
-									dcl.Label{Text: "1. 点击「开始授权」，弹出窗口打开 Microsoft 登录页，完成登录后回到这里。"},
-									dcl.Label{Text: "2. 登录后弹出页显示空白或错误是正常的：复制弹出页地址栏的完整网址（含 code=... 和 state=...）。"},
-									dcl.Label{Text: "3. 粘贴到下方输入框，点击「粘贴并确认添加」完成授权。"},
-									dcl.PushButton{Text: "1. 开始授权（打开微软登录）", Font: uiFont, OnClicked: func() {
-										go ui.m365StartAuth()
-									}},
-									dcl.Label{Text: "回调地址（粘贴弹出页地址栏的完整网址）:"},
-									dcl.LineEdit{AssignTo: &ui.m365Callback, Font: monoFont},
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
+									dcl.GroupBox{
+										Title:  "添加账号（3 步）",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
 										Children: []dcl.Widget{
-											dcl.PushButton{Text: "3. 粘贴并确认添加", Font: uiFont, OnClicked: func() {
-												go ui.m365ConfirmAdd()
+											dcl.Label{Text: "1. 点击「开始授权」，弹出窗口打开 Microsoft 登录页，完成登录后回到这里。"},
+											dcl.Label{Text: "2. 登录后弹出页显示空白或错误是正常的：复制弹出页地址栏的完整网址（含 code=... 和 state=...）。"},
+											dcl.Label{Text: "3. 粘贴到下方输入框，点击「粘贴并确认添加」完成授权。"},
+											dcl.PushButton{Text: "1. 开始授权（打开微软登录）", Font: uiFont, OnClicked: func() {
+												go ui.m365StartAuth()
 											}},
-											dcl.HSpacer{},
+											dcl.Label{Text: "回调地址（粘贴弹出页地址栏的完整网址）:"},
+											dcl.LineEdit{AssignTo: &ui.m365Callback, Font: monoFont},
+											dcl.Composite{
+												Layout: dcl.HBox{MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.PushButton{Text: "3. 粘贴并确认添加", Font: uiFont, OnClicked: func() {
+														go ui.m365ConfirmAdd()
+													}},
+													dcl.HSpacer{},
+												},
+											},
+											dcl.Label{AssignTo: &ui.m365Status, Text: "尚未开始授权。", Font: uiFont},
 										},
 									},
-									dcl.Label{AssignTo: &ui.m365Status, Text: "尚未开始授权。", Font: uiFont},
-								},
-							},
-						dcl.GroupBox{
-							Title:  "密码直授（ROPC，多账号批量）",
-							Font:   uiFont,
-							Layout: dcl.VBox{Spacing: 6},
-							Children: []dcl.Widget{
-								dcl.Label{Text: "一行一个：邮箱,密码。仅未开 MFA、非联合认证的组织账号可用；个人号/MFA 号会被微软拒绝（届时用上方 PKCE）。密码只换 token 用，不落盘。"},
-								dcl.TextEdit{
-									AssignTo: &ui.m365BatchEdit,
-									VScroll:  true,
-									MinSize:  dcl.Size{Height: 64},
-									Font:     monoFont,
-								},
-								dcl.Composite{
-									Layout: dcl.HBox{MarginsZero: true},
-									Children: []dcl.Widget{
-										dcl.PushButton{Text: "批量密码授权", Font: uiFont, OnClicked: func() {
-											go ui.m365BatchProvision()
-										}},
-										dcl.HSpacer{},
-									},
-								},
-							},
-						},
-						dcl.GroupBox{
-							Title:  "已授权账号",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
-								Children: []dcl.Widget{
-									dcl.TextEdit{
-										AssignTo: &ui.m365Accounts,
-										ReadOnly: true,
-										VScroll:  true,
-										MinSize:  dcl.Size{Height: 180},
-										Font:     monoFont,
-										Text:     "点击「刷新列表」加载…",
-									},
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
+									dcl.GroupBox{
+										Title:  "密码直授（ROPC，多账号批量）",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
 										Children: []dcl.Widget{
-											dcl.PushButton{Text: "刷新列表", Font: uiFont, OnClicked: func() {
-												go ui.m365RefreshAccounts()
-											}},
-											dcl.Label{Text: "删除账号（填 ID 或邮箱）:"},
-											dcl.LineEdit{AssignTo: &ui.m365DelEdit, Font: monoFont, MinSize: dcl.Size{Width: 200}},
-											dcl.PushButton{Text: "删除", Font: uiFont, OnClicked: func() {
-												go ui.m365DeleteAccount()
-											}},
-											dcl.HSpacer{},
+											dcl.Label{Text: "一行一个：邮箱,密码。仅未开 MFA、非联合认证的组织账号可用；个人号/MFA 号会被微软拒绝（届时用上方 PKCE）。密码只换 token 用，不落盘。"},
+											dcl.TextEdit{
+												AssignTo: &ui.m365BatchEdit,
+												VScroll:  true,
+												MinSize:  dcl.Size{Height: 52},
+												Font:     monoFont,
+											},
+											dcl.Composite{
+												Layout: dcl.HBox{MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.PushButton{Text: "批量密码授权", Font: uiFont, OnClicked: func() {
+														go ui.m365BatchProvision()
+													}},
+													dcl.HSpacer{},
+												},
+											},
 										},
 									},
-									dcl.Label{Text: "账号库与 Cline 账号同级存放（data/.m365-accounts.json），0600 权限。未设置 M365_MASTER_KEY 时刷新令牌明文落盘，请尽快设置。"},
+									dcl.GroupBox{
+										Title:  "已授权账号",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
+										Children: []dcl.Widget{
+											dcl.TextEdit{
+												AssignTo: &ui.m365Accounts,
+												ReadOnly: true,
+												VScroll:  true,
+												MinSize:  dcl.Size{Height: 110},
+												Font:     monoFont,
+												Text:     "点击「刷新列表」加载…",
+											},
+											dcl.Composite{
+												Layout: dcl.HBox{MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.PushButton{Text: "刷新列表", Font: uiFont, OnClicked: func() {
+														go ui.m365RefreshAccounts()
+													}},
+													dcl.Label{Text: "删除账号（填 ID 或邮箱）:"},
+													dcl.LineEdit{AssignTo: &ui.m365DelEdit, Font: monoFont, MinSize: dcl.Size{Width: 200}},
+													dcl.PushButton{Text: "删除", Font: uiFont, OnClicked: func() {
+														go ui.m365DeleteAccount()
+													}},
+													dcl.HSpacer{},
+												},
+											},
+											dcl.Label{Text: "账号库与 Cline 账号同级存放（data/.m365-accounts.json），0600 权限。未设置 M365_MASTER_KEY 时刷新令牌明文落盘，请尽快设置。"},
+										},
+									},
 								},
 							},
 						},
@@ -426,177 +446,182 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 
 					{
 						Title:  "网络与节点池",
-						Layout: dcl.VBox{Spacing: 8},
+						Layout: dcl.VBox{Spacing: 0, MarginsZero: true},
 						Children: []dcl.Widget{
-							dcl.GroupBox{
-								Title:  "出站与竞速（全局）",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
+							dcl.ScrollView{
+								Layout: dcl.VBox{Spacing: 4},
 								Children: []dcl.Widget{
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
+									dcl.GroupBox{
+										Title:  "出站与竞速（全局）",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
 										Children: []dcl.Widget{
-											dcl.Label{Text: "出站模式:"},
-											dcl.ComboBox{
-												AssignTo:     &ui.outboundBox,
-												Model:        outboundChoices,
-												CurrentIndex: outboundIndex,
-												MinSize:      dcl.Size{Width: 220},
+											dcl.Composite{
+												Layout: dcl.HBox{MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.Label{Text: "出站模式:"},
+													dcl.ComboBox{
+														AssignTo:     &ui.outboundBox,
+														Model:        outboundChoices,
+														CurrentIndex: outboundIndex,
+														MinSize:      dcl.Size{Width: 220},
+													},
+													dcl.HSpacer{},
+												},
 											},
-											dcl.HSpacer{},
-										},
-									},
-									dcl.CheckBox{
-										AssignTo: &ui.raceCheck,
-										Text:     "并行竞速：同一请求同时发往多个出口（手动+在线池+直连），最快返回者胜出，无需再设超长超时",
-										Checked:  settings.RaceEnabled,
-									},
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
-										Children: []dcl.Widget{
-											dcl.Label{Text: "竞速并发路数（同时发往几个出口，2-32）:"},
-											dcl.NumberEdit{AssignTo: &ui.raceWidth, Value: float64(settings.RaceWidth), MinValue: 2, MaxValue: 32, Decimals: 0, MaxSize: dcl.Size{Width: 60}},
-											dcl.HSpacer{},
-										},
-									},
-									dcl.Label{Text: "上游镜像（一行一个，请求间轮换；留空只用 opencode.ai）:"},
-									dcl.TextEdit{
-										AssignTo: &ui.mirrorEdit,
-										Text:     settings.MirrorInput,
-										VScroll:  true,
-										MinSize:  dcl.Size{Height: 64},
-									},
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
-										Children: []dcl.Widget{
-											dcl.CheckBox{AssignTo: &ui.absorbCheck, Text: "吸收重试（上游截断/失败时网关内自动换道重试，客户端只见等待）", Checked: settings.AbsorbStreaming},
-											dcl.Label{Text: "最多"},
-											dcl.NumberEdit{AssignTo: &ui.absorbAttempt, Value: float64(settings.AbsorbAttempts), MinValue: 1, MaxValue: 50, Decimals: 0, MaxSize: dcl.Size{Width: 60}},
-											dcl.Label{Text: "次（总预算 10 分钟）"},
-											dcl.HSpacer{},
-										},
-									},
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
-										Children: []dcl.Widget{
-											dcl.Label{Text: "深检间隔"},
-											dcl.NumberEdit{AssignTo: &ui.deepProbe, Value: float64(settings.DeepProbeMinutes), MinValue: 10, MaxValue: 1440, Decimals: 0, MaxSize: dcl.Size{Width: 70}},
-											dcl.Label{Text: "分     检测并发"},
-											dcl.NumberEdit{AssignTo: &ui.probeConc, Value: float64(settings.ProbeConcurrency), MinValue: 1, MaxValue: 128, Decimals: 0, MaxSize: dcl.Size{Width: 60}},
-											dcl.Label{Text: "路（节点探活/深检共用）"},
-											dcl.HSpacer{},
-										},
-									},
-									dcl.Composite{
-										Layout: dcl.HBox{MarginsZero: true},
-										Children: []dcl.Widget{
-											dcl.Label{Text: "深检模型（真实对话探测专用；列表来自上游实时拉取）:"},
-											dcl.ComboBox{
-												AssignTo: &ui.probeModelBox,
-												Model:    probeModelSeed(settings.ProbeModel),
-												MinSize:  dcl.Size{Width: 260},
+											dcl.CheckBox{
+												AssignTo: &ui.raceCheck,
+												Text:     "并行竞速：同一请求同时发往多个出口（手动+在线池+直连），最快返回者胜出，无需再设超长超时",
+												Checked:  settings.RaceEnabled,
 											},
-											dcl.HSpacer{},
+											dcl.Composite{
+												Layout: dcl.HBox{MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.Label{Text: "竞速并发路数（同时发往几个出口，2-32）:"},
+													dcl.NumberEdit{AssignTo: &ui.raceWidth, Value: float64(settings.RaceWidth), MinValue: 2, MaxValue: 32, Decimals: 0, MaxSize: dcl.Size{Width: 60}},
+													dcl.HSpacer{},
+												},
+											},
+											dcl.Label{Text: "上游镜像（一行一个，请求间轮换；留空只用 opencode.ai）:"},
+											dcl.TextEdit{
+												AssignTo: &ui.mirrorEdit,
+												Text:     settings.MirrorInput,
+												VScroll:  true,
+												MinSize:  dcl.Size{Height: 52},
+											},
+											dcl.Composite{
+												Layout: dcl.HBox{MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.CheckBox{AssignTo: &ui.absorbCheck, Text: "吸收重试（上游截断/失败时网关内自动换道重试，客户端只见等待）", Checked: settings.AbsorbStreaming},
+													dcl.Label{Text: "最多"},
+													dcl.NumberEdit{AssignTo: &ui.absorbAttempt, Value: float64(settings.AbsorbAttempts), MinValue: 1, MaxValue: 50, Decimals: 0, MaxSize: dcl.Size{Width: 60}},
+													dcl.Label{Text: "次（总预算 10 分钟）"},
+													dcl.HSpacer{},
+												},
+											},
+											dcl.Composite{
+												Layout: dcl.HBox{MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.Label{Text: "深检间隔"},
+													dcl.NumberEdit{AssignTo: &ui.deepProbe, Value: float64(settings.DeepProbeMinutes), MinValue: 10, MaxValue: 1440, Decimals: 0, MaxSize: dcl.Size{Width: 70}},
+													dcl.Label{Text: "分     检测并发"},
+													dcl.NumberEdit{AssignTo: &ui.probeConc, Value: float64(settings.ProbeConcurrency), MinValue: 1, MaxValue: 128, Decimals: 0, MaxSize: dcl.Size{Width: 60}},
+													dcl.Label{Text: "路（节点探活/深检共用）"},
+													dcl.HSpacer{},
+												},
+											},
+											dcl.Composite{
+												Layout: dcl.HBox{MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.Label{Text: "深检模型（真实对话探测专用；列表来自上游实时拉取）:"},
+													dcl.ComboBox{
+														AssignTo: &ui.probeModelBox,
+														Model:    probeModelSeed(settings.ProbeModel),
+														MinSize:  dcl.Size{Width: 260},
+													},
+													dcl.HSpacer{},
+												},
+											},
 										},
 									},
-								},
-							},
-							dcl.GroupBox{
-								Title:  "超时与代理节点（全局）",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
-								Children: []dcl.Widget{
+									dcl.GroupBox{
+										Title:  "超时与代理节点（全局）",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
+										Children: []dcl.Widget{
+											dcl.Composite{
+												Layout: dcl.HBox{MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.Label{Text: "流式首字节超时"},
+													dcl.NumberEdit{AssignTo: &ui.firstByte, Value: float64(settings.FirstByteSeconds), MinValue: 3, MaxValue: 600, Decimals: 0, MaxSize: dcl.Size{Width: 70}},
+													dcl.Label{Text: "秒     总预算"},
+													dcl.NumberEdit{AssignTo: &ui.budget, Value: float64(settings.BudgetSeconds), MinValue: 5, MaxValue: 1800, Decimals: 0, MaxSize: dcl.Size{Width: 80}},
+													dcl.Label{Text: "秒"},
+													dcl.HSpacer{},
+												},
+											},
+											dcl.Label{Text: "代理节点（一行一个；支持 socks5/http、vless://、vmess://、trojan://、ss://、hysteria2://(hy2)、tuic:// 分享链接；手动节点不会被自动删除。全局资源：「供应商」页的节点池出口开关决定谁使用）:"},
+											dcl.TextEdit{
+												AssignTo: &ui.proxyEdit,
+												Text:     settings.ProxyInput,
+												VScroll:  true,
+												MinSize:  dcl.Size{Height: 68},
+											},
+										},
+									},
+									dcl.GroupBox{
+										Title:  "IP 信誉体检（iprisk.top 聚合 16 源，零配置）",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
+										Children: []dcl.Widget{
+											dcl.Label{Text: "iprisk.top 聚合 16 个数据源给出 0-100 纯净度评分，零配置、无需注册任何 key；只体检正式池节点（转正时查一次 + 每日重查，缓存 7 天），失败自动退避。信誉只影响出场顺序，绝不单独剔除节点。"},
+											dcl.Label{Text: "地区偏好（勾选的地区优先出场，全不勾 = 不偏好）:"},
+											dcl.Composite{
+												Layout: dcl.HBox{Spacing: 2, MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.CheckBox{AssignTo: &ui.regionUS, Text: "美国"},
+													dcl.CheckBox{AssignTo: &ui.regionJP, Text: "日本"},
+													dcl.CheckBox{AssignTo: &ui.regionSG, Text: "新加坡"},
+													dcl.CheckBox{AssignTo: &ui.regionKR, Text: "韩国"},
+													dcl.CheckBox{AssignTo: &ui.regionHK, Text: "香港"},
+													dcl.HSpacer{},
+												},
+											},
+											dcl.Composite{
+												Layout: dcl.HBox{Spacing: 2, MarginsZero: true},
+												Children: []dcl.Widget{
+													dcl.CheckBox{AssignTo: &ui.regionTW, Text: "台湾"},
+													dcl.CheckBox{AssignTo: &ui.regionCN, Text: "大陆"},
+													dcl.CheckBox{AssignTo: &ui.regionEU, Text: "欧盟"},
+													dcl.CheckBox{AssignTo: &ui.regionOTHER, Text: "其他"},
+													dcl.HSpacer{},
+												},
+											},
+										},
+									},
+									dcl.GroupBox{
+										Title:  "在线节点池",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
+										Children: []dcl.Widget{
+											dcl.CheckBox{
+												AssignTo: &ui.poolCheck,
+												Text:     "自动拉取在线节点并探活（每轮用真实 opencode.ai 请求测活，健康节点实时入池、失效自动移除，无需重启）",
+												Checked:  settings.PoolEnabled,
+											},
+											dcl.Label{Text: "节点源链接（一行一个；支持 socks5/http 文本列表、amux JSON、base64 订阅链接（机场订阅，自动解码出 vless/vmess/hy2 等节点）、明文分享链接；github 页面链接自动转 raw）:"},
+											dcl.TextEdit{
+												AssignTo: &ui.poolEdit,
+												Text:     settings.PoolInput,
+												VScroll:  true,
+												MinSize:  dcl.Size{Height: 68},
+											},
+										},
+									},
+									dcl.GroupBox{
+										Title:  "正式节点（复检合格）",
+										Font:   uiFont,
+										Layout: dcl.VBox{Spacing: 4},
+										Children: []dcl.Widget{
+											dcl.Label{Text: "以下节点已通过初检＋复检双重验证，可放心使用；手动节点永不自动移除:"},
+											dcl.TextEdit{
+												AssignTo: &ui.poolLive,
+												ReadOnly: true,
+												VScroll:  true,
+												MinSize:  dcl.Size{Height: 80},
+												Font:     monoFont,
+											},
+										},
+									},
 									dcl.Composite{
 										Layout: dcl.HBox{MarginsZero: true},
 										Children: []dcl.Widget{
-											dcl.Label{Text: "流式首字节超时"},
-											dcl.NumberEdit{AssignTo: &ui.firstByte, Value: float64(settings.FirstByteSeconds), MinValue: 3, MaxValue: 600, Decimals: 0, MaxSize: dcl.Size{Width: 70}},
-											dcl.Label{Text: "秒     总预算"},
-											dcl.NumberEdit{AssignTo: &ui.budget, Value: float64(settings.BudgetSeconds), MinValue: 5, MaxValue: 1800, Decimals: 0, MaxSize: dcl.Size{Width: 80}},
-											dcl.Label{Text: "秒"},
+											dcl.PushButton{Text: "保存并重启", Font: uiFont, OnClicked: ui.onSave},
+											dcl.PushButton{Text: "仅检查格式", Font: uiFont, OnClicked: ui.onValidate},
+											dcl.PushButton{Text: "打开配置目录", Font: uiFont, OnClicked: ui.onOpenFolder},
 											dcl.HSpacer{},
 										},
 									},
-									dcl.Label{Text: "代理节点（一行一个；支持 socks5/http、vless://、vmess://、trojan://、ss://、hysteria2://(hy2)、tuic:// 分享链接；手动节点不会被自动删除。全局资源：「供应商」页的节点池出口开关决定谁使用）:"},
-									dcl.TextEdit{
-										AssignTo: &ui.proxyEdit,
-										Text:     settings.ProxyInput,
-										VScroll:  true,
-										MinSize:  dcl.Size{Height: 96},
-									},
-								},
-							},
-							dcl.GroupBox{
-								Title:  "IP 信誉体检（iprisk.top 聚合 16 源，零配置）",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
-								Children: []dcl.Widget{
-									dcl.Label{Text: "iprisk.top 聚合 16 个数据源给出 0-100 纯净度评分，零配置、无需注册任何 key；只体检正式池节点（转正时查一次 + 每日重查，缓存 7 天），失败自动退避。信誉只影响出场顺序，绝不单独剔除节点。"},
-									dcl.Label{Text: "地区偏好（勾选的地区优先出场，全不勾 = 不偏好）:"},
-									dcl.Composite{
-										Layout: dcl.HBox{Spacing: 2, MarginsZero: true},
-										Children: []dcl.Widget{
-											dcl.CheckBox{AssignTo: &ui.regionUS, Text: "美国"},
-											dcl.CheckBox{AssignTo: &ui.regionJP, Text: "日本"},
-											dcl.CheckBox{AssignTo: &ui.regionSG, Text: "新加坡"},
-											dcl.CheckBox{AssignTo: &ui.regionKR, Text: "韩国"},
-											dcl.CheckBox{AssignTo: &ui.regionHK, Text: "香港"},
-											dcl.HSpacer{},
-										},
-									},
-									dcl.Composite{
-										Layout: dcl.HBox{Spacing: 2, MarginsZero: true},
-										Children: []dcl.Widget{
-											dcl.CheckBox{AssignTo: &ui.regionTW, Text: "台湾"},
-											dcl.CheckBox{AssignTo: &ui.regionCN, Text: "大陆"},
-											dcl.CheckBox{AssignTo: &ui.regionEU, Text: "欧盟"},
-											dcl.CheckBox{AssignTo: &ui.regionOTHER, Text: "其他"},
-											dcl.HSpacer{},
-										},
-									},
-								},
-							},
-							dcl.GroupBox{
-								Title:  "在线节点池",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
-								Children: []dcl.Widget{
-									dcl.CheckBox{
-										AssignTo: &ui.poolCheck,
-										Text:     "自动拉取在线节点并探活（每轮用真实 opencode.ai 请求测活，健康节点实时入池、失效自动移除，无需重启）",
-										Checked:  settings.PoolEnabled,
-									},
-									dcl.Label{Text: "节点源链接（一行一个；支持 socks5/http 文本列表、amux JSON、base64 订阅链接（机场订阅，自动解码出 vless/vmess/hy2 等节点）、明文分享链接；github 页面链接自动转 raw）:"},
-									dcl.TextEdit{
-										AssignTo: &ui.poolEdit,
-										Text:     settings.PoolInput,
-										VScroll:  true,
-										MinSize:  dcl.Size{Height: 96},
-									},
-								},
-							},
-							dcl.GroupBox{
-								Title:  "正式节点（复检合格）",
-								Font:   uiFont,
-								Layout: dcl.VBox{Spacing: 6},
-								Children: []dcl.Widget{
-									dcl.Label{Text: "以下节点已通过初检＋复检双重验证，可放心使用；手动节点永不自动移除:"},
-									dcl.TextEdit{
-										AssignTo: &ui.poolLive,
-										ReadOnly: true,
-										VScroll:  true,
-										MinSize:  dcl.Size{Height: 120},
-										Font:     monoFont,
-									},
-								},
-							},
-							dcl.Composite{
-								Layout: dcl.HBox{MarginsZero: true},
-								Children: []dcl.Widget{
-									dcl.PushButton{Text: "保存并重启", Font: uiFont, OnClicked: ui.onSave},
-									dcl.PushButton{Text: "仅检查格式", Font: uiFont, OnClicked: ui.onValidate},
-									dcl.PushButton{Text: "打开配置目录", Font: uiFont, OnClicked: ui.onOpenFolder},
-									dcl.HSpacer{},
 								},
 							},
 						},
@@ -604,12 +629,12 @@ func runGatewayUI(handler *app, settings uiSettings, path string, shutdown func(
 
 					{
 						Title:  "实时日志",
-						Layout: dcl.VBox{Spacing: 6},
+						Layout: dcl.VBox{Spacing: 4},
 						Children: []dcl.Widget{
 							dcl.ListBox{
 								AssignTo: &ui.logList,
 								Font:     monoFont,
-								MinSize:  dcl.Size{Height: 320},
+								MinSize:  dcl.Size{Height: 280},
 							},
 						},
 					},
@@ -783,13 +808,13 @@ func (ui *gatewayUI) paintBanner(canvas *walk.Canvas, bounds walk.Rectangle) err
 
 	pad, w, h := 16, bounds.Width, bounds.Height
 	if err := canvas.DrawText("opencode-free-autogate", bannerTitleFont, walk.RGB(236, 239, 246),
-		walk.Rectangle{X: bounds.X + pad, Y: bounds.Y + 9, Width: w - 330, Height: 26}, 0); err != nil {
+		walk.Rectangle{X: bounds.X + pad, Y: bounds.Y + 5, Width: w - 330, Height: 24}, 0); err != nil {
 		return err
 	}
 	sub := fmt.Sprintf("本地网关 · 已运行 %s · OpenCode + Cline + M365",
 		time.Since(ui.start).Round(time.Second))
 	if err := canvas.DrawText(sub, bannerSubFont, walk.RGB(150, 158, 172),
-		walk.Rectangle{X: bounds.X + pad, Y: bounds.Y + 37, Width: w - 330, Height: 20}, 0); err != nil {
+		walk.Rectangle{X: bounds.X + pad, Y: bounds.Y + 29, Width: w - 330, Height: 18}, 0); err != nil {
 		return err
 	}
 
